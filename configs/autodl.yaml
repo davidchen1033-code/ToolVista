@@ -1,0 +1,46 @@
+# Default path layout for running ToolVista on AutoDL.
+#
+# Keep adapter code path-agnostic: load these roots from config instead of
+# hardcoding local Windows or AutoDL absolute paths inside Python modules.
+
+project:
+  base_path: /root/autodl-tmp/ToolVista
+
+model:
+  base_path: /root/autodl-tmp/model
+  qwen3_vl: /root/autodl-tmp/model/Qwen3-VL-4B-Instruct
+
+data:
+  base_path: /root/autodl-tmp/ToolVista/data
+  raw_path: /root/autodl-tmp/ToolVista/data/raw
+  canonical_path: /root/autodl-tmp/ToolVista/data/canonical
+  export_path: /root/autodl-tmp/ToolVista/data/exports
+  report_path: /root/autodl-tmp/ToolVista/data/reports
+
+datasets:
+  mllm_tool:
+    root: /root/autodl-tmp/ToolVista/data/raw/MLLM-Tool
+    instruction_dir: data/IT_data_ins/T+X-T_data
+    media_dir: data/IT_data_ins/T+X-T_data/mm_dataset
+    files:
+      image: image_tx2t.json
+      video: video_tx2t.json
+      audio: audio_tx2t.json
+      text: text_t2t.json
+      combined: combined_data.json
+
+  toolvqa:
+    root: /root/autodl-tmp/ToolVista/data/raw/ToolVQA
+    annotation_dir: annotations
+    media_dir: images
+
+  xlam:
+    root: /root/autodl-tmp/ToolVista/data/raw/xLAM
+    unified_data_dir: actionstudio/datasets/unified_data
+    default_subset: actionstudio-98k
+    default_split: train
+
+exports:
+  qwen_official_sanity: /root/autodl-tmp/ToolVista/data/exports/qwen_official_sanity
+  msswift_sft: /root/autodl-tmp/ToolVista/data/exports/msswift_sft
+  msswift_dpo: /root/autodl-tmp/ToolVista/data/exports/msswift_dpo
