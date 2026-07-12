@@ -1,0 +1,1 @@
+{"id":"sample-1","image":"../toolvqa/images/part3/TB1tM0jLXXXXXa1XFXXunYpLFXX.jpg","problem":"Which class is shown?","solution":"<think>Look at the shape.</think><answer>aircraft</answer>","original_question":"What is this?","original_answer":"aircraft","task":"classification"}

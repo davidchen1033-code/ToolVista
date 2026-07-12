@@ -1,0 +1,10 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local datasets and generated conversion outputs
+data/exports/
+data/reports/
+
+# Test temporary directories
+tests/tmp*/

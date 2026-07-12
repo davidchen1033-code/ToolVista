@@ -31,8 +31,11 @@ datasets:
 
   toolvqa:
     root: /root/autodl-tmp/ToolVista/data/raw/ToolVQA
-    annotation_dir: annotations
+    annotation_dir: .
     media_dir: images
+    files:
+      train: train.jsonl
+      test: test.jsonl
 
   xlam:
     root: /root/autodl-tmp/ToolVista/data/raw/xLAM
@@ -40,7 +43,14 @@ datasets:
     default_subset: actionstudio-98k
     default_split: train
 
+  visual_rft:
+    root: /root/autodl-tmp/ToolVista/data/raw/Visual-RFT
+    data_path: train
+    default_split: train
+    materialized_media_dir: materialized_images
+
 exports:
   qwen_official_sanity: /root/autodl-tmp/ToolVista/data/exports/qwen_official_sanity
   msswift_sft: /root/autodl-tmp/ToolVista/data/exports/msswift_sft
+  msswift_grpo: /root/autodl-tmp/ToolVista/data/exports/msswift_grpo
   msswift_dpo: /root/autodl-tmp/ToolVista/data/exports/msswift_dpo

@@ -1,0 +1,21 @@
+[
+  {
+    "id": 2,
+    "image_path": "sample.jpg",
+    "input_modality": "image",
+    "output_modality": "text",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "Select a depth-estimation model for this image.",
+        "input_modality": "image"
+      },
+      {
+        "from": "gpt",
+        "value": "Intel/dpt-large",
+        "ambiguity": -1,
+        "output_modality": "text"
+      }
+    ]
+  }
+]
