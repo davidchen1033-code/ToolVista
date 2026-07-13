@@ -51,12 +51,12 @@ The system must:
 1. Run lightweight cumulative regression after every training stage and reviewed RL run.
 2. Run comprehensive evaluation at major checkpoints.
 3. Reuse upstream evaluators without copying them into ToolVista.
-4. Expose one ToolVista command for planning, executing, resuming, scoring, aggregating, and uploading an evaluation suite.
+4. Expose one ToolVista command for executing, scoring, summarizing, and optionally uploading an evaluation suite.
 5. Preserve raw upstream predictions, trajectories, logs, results, metric names, and scales.
-6. Produce a common result envelope for cross-checkpoint comparison.
+6. Produce a small, easy-to-read result JSON for cross-checkpoint comparison.
 7. Track retention, forgetting, training-token efficiency, generated-token efficiency, and GPU-hour efficiency.
 8. Treat local JSON and JSONL artifacts as the source of truth and W&B as the online view.
-9. Prevent train/evaluation leakage with immutable manifests and stable hashes.
+9. Prevent obvious train/evaluation leakage with frozen split files and stable sample IDs.
 10. Enforce a fair GRPO, BNPO, and DAPO comparison.
 
 中文翻译：
@@ -64,12 +64,22 @@ The system must:
 1. 每个训练阶段以及每个需要审查的 RL 运行结束后，都执行轻量级累计回归测试。
 2. 在关键 checkpoint 上执行完整评测。
 3. 复用上游 evaluator，而不是将其代码复制进 ToolVista。
-4. 提供一个统一的 ToolVista 命令，用于规划、执行、恢复、评分、聚合和上传整套评测。
+4. 提供一个统一的 ToolVista 命令，用于执行、评分、汇总，并可选上传整套评测。
 5. 保留上游原始预测、轨迹、日志、结果、指标名称和指标量纲。
-6. 生成统一的结果外层协议，用于跨 checkpoint 对比。
+6. 生成小型、易读的统一结果 JSON，用于跨 checkpoint 对比。
 7. 跟踪能力保持率、遗忘程度、训练 token 效率、生成 token 效率和 GPU 小时效率。
 8. 将本地 JSON/JSONL 作为事实来源，将 W&B 作为在线展示与对比界面。
-9. 通过不可变 manifest 和稳定哈希防止训练集与评测集泄漏。
+9. 通过冻结的 split 文件和稳定 sample ID 防止明显的训练集与评测集泄漏。
+
+### 2.1 Simplicity First / 简单优先
+
+The first implementation is a lightweight experiment script for a practice project, not a production evaluation platform. Prefer explicit files, sequential commands, and readable JSON over generic abstractions, fine-grained recovery, background services, or complex state machines.
+
+中文翻译：第一版是练手项目使用的轻量实验脚本，不是生产级评测平台。优先选择显式文件、顺序命令和易读 JSON，不追求通用抽象、逐样本恢复、后台服务管理或复杂状态机。
+
+When a feature does not directly help run a benchmark, preserve an upstream metric, or compare two checkpoints, defer it.
+
+中文翻译：如果某项功能不能直接帮助运行 benchmark、保留上游指标或比较两个 checkpoint，就推迟实现。
 10. 确保 GRPO、BNPO 和 DAPO 的对比公平。
 
 ## 3. Non-Goals / 非目标
@@ -85,6 +95,9 @@ The first implementation will not:
 5. Automatically download every large benchmark and media archive.
 6. Select checkpoints from training loss or online RL reward alone.
 7. Put evaluation logic in ToolVista dataset adapters or exporters.
+8. Implement sample-level resume, content-addressed prediction caches, job queues, or a general service lifecycle manager.
+9. Guarantee automatic recovery from every process, network, GPU, or tool failure.
+10. Reconstruct W&B runs from a complex offline event log.
 
 中文翻译：
 
@@ -95,6 +108,9 @@ The first implementation will not:
 5. 不自动下载所有大型 benchmark 和媒体压缩包。
 6. 不只根据训练 loss 或在线 RL reward 选择 checkpoint。
 7. 不把评测逻辑放入 ToolVista 的数据集 adapter 或 exporter。
+8. 不实现逐样本断点恢复、内容寻址预测缓存、任务队列或通用服务生命周期管理器。
+9. 不保证对所有进程、网络、GPU 或工具故障进行自动恢复。
+10. 不通过复杂离线事件日志重建 W&B run。
 
 The existing training-data path remains separate:
 
@@ -159,10 +175,10 @@ ToolVista owns:
 - checkpoint and API serving orchestration;
 - test-manifest preparation and validation;
 - prediction conversion into upstream formats;
-- command construction and process lifecycle;
+- command construction and simple subprocess execution;
 - parsing upstream outputs without changing metric semantics;
 - a common result envelope and metric namespace;
-- caching, resume, coverage, and failure accounting;
+- simple skip/re-score behavior, sample counts, and failure accounting;
 - retention, forgetting, efficiency, and multi-seed aggregation;
 - local artifact storage and W&B upload.
 
@@ -171,10 +187,10 @@ ToolVista owns:
 - checkpoint 和 API 服务编排；
 - 测试 manifest 的准备与校验；
 - 将预测转换成上游要求的格式；
-- 构造命令并管理进程生命周期；
+- 构造命令并进行简单子进程执行；
 - 在不改变指标语义的前提下解析上游输出；
 - 统一结果协议和指标命名空间；
-- 缓存、断点恢复、coverage 和失败统计；
+- 简单跳过/重新评分、样本数量和失败统计；
 - retention、forgetting、效率和多 seed 聚合；
 - 本地 artifact 保存与 W&B 上传。
 
@@ -222,9 +238,48 @@ Every training run records planned and actual token ratios, source sample counts
 
 ### 6.1 Online Metrics / 在线训练指标
 
-Record loss, learning rate, gradient norm, throughput, GPU memory, reward components, KL, completion length, truncation rate, and generated tokens at every available logging step.
+Reuse ms-swift, Transformers Trainer, DeepSpeed, vLLM, and W&B logging wherever possible. Do not build a second metrics collector for values already emitted by the training framework.
 
-中文翻译：在每个可用 logging step 记录 loss、学习率、梯度范数、吞吐量、GPU 显存、各 reward 分量、KL、completion 长度、截断率以及生成 token 数。
+中文翻译：尽量直接复用 ms-swift、Transformers Trainer、DeepSpeed、vLLM 和 W&B 已经产生的日志。训练框架已经提供的指标，不再重复实现第二套采集器。
+
+Record the following metrics when the upstream framework exposes them:
+
+中文翻译：上游框架能够提供时，尽量记录以下指标：
+
+```text
+Optimization / 优化过程
+  train loss, eval loss, learning rate, epoch, global step
+  gradient norm, loss scale, skipped optimizer steps
+
+Performance / 性能
+  samples per second, steps per second, tokens per second
+  step time, data-loading time, evaluation time, checkpoint-save time
+  total wall-clock time and GPU hours
+
+Memory / 显存与内存
+  current allocated GPU memory
+  peak allocated GPU memory
+  peak reserved GPU memory
+  host RAM when readily available
+
+SFT data / SFT 数据
+  source sample counts and supervised token counts
+  input length, target length, truncation count and truncation rate
+  text tokens, visual tokens, total tokens
+
+RL rollout / RL 采样
+  total reward and each reward component
+  reward mean, standard deviation, minimum, maximum, and zero-reward rate
+  KL, completion length, generated tokens, truncated completions
+  rollout success/error count and reward-computation time
+
+Run identity / 运行标识
+  checkpoint, stage, algorithm, seed, dataset version, git commit
+```
+
+ToolVista's outer wrapper adds only start time, end time, wall-clock duration, process exit code, and peak GPU memory when these are missing upstream.
+
+中文翻译：只有上游日志缺失时，ToolVista 外层 wrapper 才补充开始时间、结束时间、墙钟耗时、进程退出码和峰值 GPU 显存。
 
 ### 6.2 Lightweight Cumulative Regression / 轻量累计回归测试
 
@@ -433,9 +488,9 @@ Execution: python_callable or command
 
 中文翻译：本地 Visual-RFT 仓库位于 `F:\code\Visual-RFT`。COCO scorer、LISA scorer 链、分类验证标注、MAT-Coding 和 MAT-Search 的本地路径如上。根据 evaluator 形式，使用 `python_callable` 或 `command` 模式复用。
 
-The classification annotations contain 3,333 FGVC-Aircraft, 2,463 Oxford Flowers, 3,669 Oxford Pets, and 8,041 Stanford Cars validation rows. Their image paths are missing author-machine paths, so ToolVista must create a remapped immutable manifest after downloading official images.
+The classification annotations contain 3,333 FGVC-Aircraft, 2,463 Oxford Flowers, 3,669 Oxford Pets, and 8,041 Stanford Cars validation rows. Their image paths are missing author-machine paths, so ToolVista creates a simple remapped path file after downloading official images.
 
-中文翻译：分类标注包含 3333 条 FGVC-Aircraft、2463 条 Oxford Flowers、3669 条 Oxford Pets 和 8041 条 Stanford Cars 验证样本。标注中的图片路径指向作者机器且本地不存在，因此下载官方图片后，需要由 ToolVista 生成重映射且不可变的 manifest。
+中文翻译：分类标注包含 3333 条 FGVC-Aircraft、2463 条 Oxford Flowers、3669 条 Oxford Pets 和 8041 条 Stanford Cars 验证样本。标注中的图片路径指向作者机器且本地不存在，因此下载官方图片后，由 ToolVista 生成一份简单的路径重映射文件。
 
 COCO, LVIS, and LISA require external image and annotation packages. For MAT, prefer current VLMEvalKit MAT-Bench support; the repository prediction formats and notebook formulas are compatibility fallbacks because the old scripts hard-code Qwen2.5-VL classes and paths.
 
@@ -508,9 +563,13 @@ The orchestrator records the actual expanded upstream command in `task.json`; re
 
 ## 12. Registry and Suite Contracts / Registry 与 Suite 契约
 
-Every benchmark registry entry declares benchmark ID/version, upstream project/root/commit, working directory, execution mode, runtime type, data manifest/hash, converter, command or callable, parser, metric mapping/scaling, environment, resources, timeout/retry policy, services, and credentials.
+Each benchmark registry entry declares only the fields required to run and explain the test: benchmark ID, source project, dataset/split, upstream repository and evaluator, working directory, command or callable, parser, primary metrics, and optional sample limit.
 
-中文翻译：每个 benchmark registry 条目都必须声明 benchmark ID/版本、上游项目/根目录/commit、工作目录、执行模式、runtime 类型、数据 manifest/hash、converter、上游命令或 callable、parser、指标映射与缩放规则、环境、资源、超时/重试策略、所需服务和凭据。
+中文翻译：每个 benchmark registry 条目只声明运行测试和解释测试所必需的字段：benchmark ID、来源项目、测评集/split、上游仓库与 evaluator、工作目录、命令或 callable、parser、主指标，以及可选的样本数限制。
+
+Environment variables, credentials, GPU selection, and timeout may be supplied by the suite or command line. Do not create a generic dependency or service description language in Phase 1.
+
+中文翻译：环境变量、凭据、GPU 选择和 timeout 可以由 suite 或命令行提供。Phase 1 不创建通用依赖或服务描述语言。
 
 Suites describe what to evaluate, not how. The registry determines conversion, execution, scoring, and parsing.
 
@@ -553,9 +612,9 @@ python scripts/evaluate.py \
   --mode full
 ```
 
-Focused operations support one benchmark, `--predict-only`, `--score-only`, and `--resume`.
+Focused operations support one benchmark and `--score-only`. `--resume` is a simple whole-benchmark skip/re-score option, not a sample-level recovery engine.
 
-中文翻译：统一命令还必须支持仅执行一个 benchmark，以及 `--predict-only`、`--score-only` 和 `--resume` 等聚焦操作。
+中文翻译：统一命令支持只执行一个 benchmark 和 `--score-only`。`--resume` 只是简单的整项跳过/重新评分选项，不是逐样本恢复引擎。
 
 ## 14. Data Flow / 数据流
 
@@ -563,43 +622,37 @@ Focused operations support one benchmark, `--predict-only`, `--score-only`, and 
 
 ```text
 load suite and registry
-  -> create evaluation manifest
-  -> validate checkpoint, data, media, commits, dependencies, and credentials
-  -> create execution plan
-  -> start or reuse model and tool services
-  -> generate or reuse predictions
+  -> validate checkpoint and required data paths
+  -> run benchmarks sequentially
+  -> generate predictions, or reuse a complete predictions file
   -> convert predictions to upstream format
   -> invoke upstream evaluator or minimal local scorer
   -> preserve raw upstream output
-  -> parse ToolVista result envelope
-  -> validate coverage and comparability
+  -> parse a small ToolVista result JSON
   -> compute retention, forgetting, and efficiency
-  -> atomically write local artifacts
-  -> upload completed local results to W&B
+  -> write local artifacts
+  -> optionally upload summary metrics to W&B
 ```
 
 ```text
 读取 suite 和 registry
-  -> 创建 evaluation manifest
-  -> 校验 checkpoint、数据、媒体、commit、依赖和凭据
-  -> 创建执行计划
-  -> 启动或复用模型服务与工具服务
-  -> 生成或复用预测
+  -> 校验 checkpoint 和必需数据路径
+  -> 顺序运行各 benchmark
+  -> 生成预测，或复用一份完整 predictions 文件
   -> 将预测转换成上游格式
   -> 调用上游 evaluator 或最小化本地 scorer
   -> 保留上游原始输出
-  -> 解析成 ToolVista 统一结果协议
-  -> 校验 coverage 和可比性
+  -> 解析成小型 ToolVista 结果 JSON
   -> 计算 retention、forgetting 和效率
-  -> 原子写入本地 artifact
-  -> 将已经完成的本地结果上传到 W&B
+  -> 写入本地 artifact
+  -> 可选上传汇总指标到 W&B
 ```
 
 ## 15. Model Runtime / 模型运行方式
 
-OpenAI-compatible API mode serves xLAM, MLLM Router, ToolVQA, BFCL, and compatible upstream evaluators. The bridge starts one `swift deploy` service, waits for health, and shares it across compatible benchmarks.
+OpenAI-compatible API mode serves xLAM, MLLM Router, ToolVQA, BFCL, and compatible upstream evaluators. Phase 1 accepts an existing API endpoint. A small optional wrapper may start one `swift deploy` process for the suite and stop it when the suite ends; it does not manage multiple services or automatic restarts.
 
-中文翻译：OpenAI-compatible API 模式用于 xLAM、MLLM Router、ToolVQA、BFCL 和其他兼容的上游 evaluator。桥接器启动一个 `swift deploy` 服务，等待健康检查通过后，让兼容的 benchmark 共享该服务。
+中文翻译：OpenAI-compatible API 模式用于 xLAM、MLLM Router、ToolVQA、BFCL 和其他兼容的上游 evaluator。Phase 1 默认接收一个已经存在的 API endpoint。可以提供一个可选的小 wrapper，在 suite 开始时启动一个 `swift deploy` 进程并在结束时停止；不管理多个服务，也不自动重启。
 
 Direct checkpoint loading is used by `swift eval`, native VLMEvalKit integrations, Visual-RFT grounding/detection, and MAT evaluators that need model internals or a local processor.
 
@@ -607,11 +660,11 @@ Direct checkpoint loading is used by `swift eval`, native VLMEvalKit integration
 
 ## 16. Frozen Inference Configuration / 冻结的推理配置
 
-The comparability contract includes chat template, system prompt, temperature, top-p/top-k, maximum tokens, image preprocessing, tool order/schema, stop words, seed, timeout, retry policy, concurrency, and reasoning visibility. Changing any value invalidates the prediction cache.
+Record chat template, system prompt, temperature, top-p/top-k, maximum tokens, image preprocessing, tool order/schema, stop words, seed, and reasoning visibility in the result metadata. The comparison script warns when these fields differ; it does not require a content-addressed cache system.
 
-中文翻译：可比性契约包含 chat template、system prompt、temperature、top-p/top-k、最大生成 token、图片预处理、工具顺序/schema、stop words、seed、timeout、重试策略、并发数和 reasoning 可见性。任意一项发生变化，都必须使预测缓存失效。
+中文翻译：在结果 metadata 中记录 chat template、system prompt、temperature、top-p/top-k、最大生成 token、图片预处理、工具顺序/schema、stop words、seed 和 reasoning 可见性。比较脚本在这些字段不同时给出警告，但不要求实现内容寻址缓存系统。
 
-## 17. Prediction, Scoring, and Cache / 预测、评分与缓存
+## 17. Prediction and Scoring / 预测与评分
 
 Each specialty benchmark separates prediction from scoring:
 
@@ -627,17 +680,41 @@ predict：manifest -> predictions.jsonl 或 trajectories.jsonl
 score：predictions -> 上游 evaluator -> 上游结果
 ```
 
-The cache key includes checkpoint fingerprint, benchmark manifest hash, prompt/template hash, generation configuration hash, media preprocessing hash, tool-schema hash, bridge version, and upstream commit.
+Reuse is intentionally simple:
 
-中文翻译：缓存键包含 checkpoint 指纹、benchmark manifest hash、prompt/template hash、生成配置 hash、媒体预处理 hash、tool-schema hash、bridge 版本和上游 commit。
+中文翻译：预测复用规则刻意保持简单：
 
-Changing the checkpoint, prompt, generation settings, data, or media preprocessing requires new predictions. Changing only the result parser or upstream evaluator permits prediction reuse but requires re-scoring. Changing only W&B upload logic requires neither.
+```text
+no predictions file
+  -> run prediction and scoring
 
-中文翻译：checkpoint、prompt、生成设置、数据或媒体预处理发生变化时，必须重新生成预测。只修改结果 parser 或上游 evaluator 时可以复用预测，但必须重新评分。只修改 W&B 上传逻辑时，不需要重新预测或评分。
+complete predictions file plus --score-only
+  -> run scoring only
 
-Every result records `fresh_prediction`, `cached_prediction`, or `rescored_prediction`.
+result.json exists plus --resume
+  -> skip the whole benchmark
 
-中文翻译：每份结果都必须记录预测来源状态：`fresh_prediction` 表示本次新生成，`cached_prediction` 表示直接使用缓存，`rescored_prediction` 表示复用预测后重新评分。
+partial or malformed file
+  -> delete or rename it manually, then rerun the whole benchmark
+```
+
+```text
+不存在 predictions 文件
+  -> 执行预测和评分
+
+存在完整 predictions 文件并指定 --score-only
+  -> 只执行评分
+
+存在 result.json 并指定 --resume
+  -> 整项跳过 benchmark
+
+文件不完整或格式损坏
+  -> 手动删除或改名，然后整项重跑
+```
+
+The result records only `prediction_mode: fresh` or `prediction_mode: score_only`.
+
+中文翻译：结果中只记录 `prediction_mode: fresh` 或 `prediction_mode: score_only`。
 
 ## 18. Tool Execution Isolation / 工具执行隔离
 
@@ -653,9 +730,9 @@ Every result records `fresh_prediction`, `cached_prediction`, or `rescored_predi
 
 ### 18.2 MAT-Coding / MAT 代码执行隔离
 
-Each sample executes generated code in an isolated temporary directory. Preserve generated code, stdout, stderr, exit status, timeout status, generated media, and final answer. Apply explicit CPU, memory, disk, and wall-clock limits.
+For MAT-Coding, reuse the upstream execution approach first. A simple per-run working directory and a wall-clock timeout are sufficient for this practice project. Preserve generated code, stdout, stderr, exit status, generated media, and final answer.
 
-中文翻译：每条样本都在独立临时目录中执行模型生成的代码。必须保存生成代码、stdout、stderr、退出状态、超时状态、生成媒体和最终答案，并设置明确的 CPU、内存、磁盘和运行时长限制。
+中文翻译：MAT-Coding 优先复用上游执行方式。对于这个练手项目，每次运行使用独立工作目录并设置墙钟超时即可，不额外实现完整沙箱。保留生成代码、stdout、stderr、退出状态、生成媒体和最终答案。
 
 A model-generated code timeout is a task result. A bridge process crash is an infrastructure failure.
 
@@ -695,27 +772,25 @@ Frozen and live scores remain separate and never appear in the same primary comp
 
 ## 19. Resource Scheduling / 资源调度
 
-Each benchmark declares GPU count, expected GPU memory, CPU count, and whether GPU access is exclusive.
+Each suite may declare a CUDA device and optional sample limit. Detailed resource scheduling declarations are not required.
 
-中文翻译：每个 benchmark 都要声明 GPU 数量、预计显存、CPU 数量，以及是否需要独占 GPU。
+中文翻译：每个 suite 可以声明 CUDA device 和可选样本数限制，不要求详细的资源调度声明。
 
 First-version scheduling rules are:
 
 中文翻译：第一版调度规则如下：
 
-1. Direct-load GPU benchmarks run sequentially unless explicitly shareable.
-2. API benchmarks share one `swift deploy` service and use bounded concurrency.
-3. CPU-only scorers may run in parallel.
-4. Tool servers have explicit start, health-check, and stop lifecycles.
-5. Training distribution remains the responsibility of ms-swift and `torchrun`.
+1. Run benchmarks sequentially.
+2. Do not run two GPU model loaders at the same time.
+3. If a benchmark needs an external API or tool server, require the operator to start it explicitly or use a benchmark-specific helper script.
+4. Training distribution remains the responsibility of ms-swift and `torchrun`.
 
 中文翻译：
 
-1. 直接加载模型的 GPU benchmark 默认顺序执行，除非明确声明可以共享。
-2. API benchmark 共享一个 `swift deploy` 服务，并使用有限并发。
-3. 纯 CPU scorer 可以并行执行。
-4. 工具服务器必须具备明确的启动、健康检查和停止生命周期。
-5. 训练分布式调度仍然由 ms-swift 和 `torchrun` 负责。
+1. 各 benchmark 顺序执行。
+2. 不同时运行两个需要加载 GPU 模型的任务。
+3. benchmark 需要外部 API 或工具服务器时，由运行者显式启动，或使用该 benchmark 专用的 helper 脚本。
+4. 训练分布式调度仍由 ms-swift 和 `torchrun` 负责。
 
 The first version is a single-machine AutoDL orchestrator, not a cluster scheduler.
 
@@ -728,30 +803,24 @@ The first version is a single-machine AutoDL orchestrator, not a cluster schedul
 ```text
 runs/<run_id>/
 |-- manifest.json
-|-- plan.json
-|-- services.json
 |-- train_metrics.jsonl
 |-- eval/
 |   `-- <benchmark_id>/
-|       |-- task.json
 |       |-- predictions.jsonl
-|       |-- failures.jsonl
-|       |-- upstream/
+|       |-- upstream_result.json
 |       |-- result.json
 |       |-- stdout.log
 |       `-- stderr.log
-|-- artifacts/
-|-- summary.json
-`-- wandb.json
+`-- summary.json
 ```
 
 Raw upstream output is never deleted after parsing.
 
 中文翻译：上游原始输出在解析完成后也不能删除。
 
-`manifest.json` records run/checkpoint IDs, parent checkpoint, stage, algorithm, seed, ToolVista commit, ms-swift and upstream commits, base-model revision, dataset versions and hashes, training-token budget, replay ratios, inference settings, hardware/software environment, and timestamps.
+`manifest.json` records run ID, checkpoint, stage, algorithm, seed, ToolVista commit, source project, dataset/split, evaluator, inference settings, start time, end time, and duration. Additional environment details are optional.
 
-中文翻译：`manifest.json` 记录 run/checkpoint ID、父 checkpoint、训练阶段、算法、seed、ToolVista commit、ms-swift 和各上游 commit、基座模型 revision、数据集版本/hash、训练 token 预算、replay 比例、推理设置、软硬件环境和时间戳。
+中文翻译：`manifest.json` 记录 run ID、checkpoint、训练阶段、算法、seed、ToolVista commit、来源项目、测评集/split、evaluator、推理设置、开始时间、结束时间和耗时。其他环境信息可选记录。
 
 ## 21. Result Protocol / 统一结果协议
 
@@ -763,21 +832,22 @@ Each benchmark writes `result.json`:
 {
   "schema_version": "1.0",
   "run_id": "c4_unified_sft_seed42",
-  "checkpoint_id": "c4_unified_sft",
+  "checkpoint": "/root/autodl-tmp/checkpoints/c4_unified_sft",
   "benchmark": "toolvqa_step",
-  "benchmark_version": "toolvqa@99caf3a5",
   "profile": "light",
-  "status": "passed",
-  "prediction_provenance": "fresh_prediction",
-  "comparability_key": "sha256:<computed-digest>",
-  "coverage": {
-    "planned": 200,
-    "attempted": 200,
-    "completed": 200,
-    "infrastructure_failed": 0,
-    "invalid_predictions": 7,
-    "ratio": 1.0
+  "prediction_mode": "fresh",
+  "test_summary": {
+    "method": "ToolVQA step-by-step every_with_gt",
+    "dataset": "ToolVQA OpenCompass test split",
+    "source_project": "ToolVQA-release",
+    "evaluator": "GTABenchEvaluator",
+    "sample_count": 200,
+    "command": "python run.py generated_config.py ..."
   },
+  "status": "passed",
+  "attempted": 200,
+  "completed": 198,
+  "failed": 2,
   "upstream_metrics": {
     "tool_acc": 81.2,
     "arg_acc": 73.6
@@ -786,10 +856,14 @@ Each benchmark writes `result.json`:
     "toolvqa/tool_acc": 0.812,
     "toolvqa/arg_acc": 0.736
   },
+  "runtime": {
+    "duration_seconds": 412.8,
+    "peak_gpu_memory_mb": 18342,
+    "exit_code": 0
+  },
   "artifacts": {
     "predictions": "predictions.jsonl",
-    "failures": "failures.jsonl",
-    "upstream_result": "upstream/result.json",
+    "upstream_result": "upstream_result.json",
     "stdout": "stdout.log",
     "stderr": "stderr.log"
   }
@@ -804,28 +878,29 @@ Each benchmark writes `result.json`:
 
 - `schema_version`：ToolVista 结果协议版本。
 - `run_id`：本次训练或评测运行 ID。
-- `checkpoint_id`：被评测 checkpoint 的稳定标识。
-- `benchmark` / `benchmark_version`：测试名称及其上游版本。
+- `checkpoint`：被评测 checkpoint 路径或模型 ID。
+- `benchmark`：测试名称。
 - `profile`：`light` 或 `full` 等评测规模。
 - `status`：本项 benchmark 的运行状态。
-- `prediction_provenance`：预测是新生成、缓存复用还是重新评分。
-- `comparability_key`：判断不同 checkpoint 结果能否直接比较的哈希。
-- `coverage`：计划、尝试、完成、基础设施失败和非法预测统计。
+- `prediction_mode`：本次是新预测还是仅重新评分。
+- `test_summary`：测试方式、测评集、来源项目、evaluator、样本数和实际命令。
+- `attempted/completed/failed`：简单样本数量统计。
+- `runtime`：耗时、峰值显存和退出码。
 - `artifacts`：预测、失败记录、上游结果和日志文件路径。
 
-## 22. Coverage Semantics / Coverage 语义
+## 22. Sample Count Semantics / 样本数量语义
 
-An invalid model prediction counts as a completed sample and receives the benchmark-defined failure score, normally zero. It does not lower coverage.
+An invalid model prediction counts as a completed sample and receives the benchmark-defined failure score, normally zero.
 
-中文翻译：模型输出非法预测仍然算作已完成样本，并按照 benchmark 规则计失败分，通常为 0 分。它不会降低 coverage。
+中文翻译：模型输出非法预测仍然算作已完成样本，并按照 benchmark 规则计失败分，通常为 0 分。
 
-Coverage decreases only for infrastructure failures such as an unfinished request, unreadable media, unavailable tool service, or an upstream process losing the sample.
+Record only `attempted`, `completed`, and `failed`. A request, media, or tool infrastructure failure increments `failed`.
 
-中文翻译：只有请求未完成、媒体无法读取、工具服务不可用、上游进程丢失样本等基础设施失败，才会降低 coverage。
+中文翻译：只记录 `attempted`、`completed` 和 `failed`。请求、媒体或工具基础设施故障使 `failed` 增加。
 
-Formal reports require 100% coverage. Lightweight trend reports require at least 98% infrastructure coverage and may compare checkpoints only on an identical completed sample-ID set.
+The report always shows these counts. The operator decides whether a failed count is acceptable; Phase 1 does not implement coverage thresholds or aligned-subset comparison.
 
-中文翻译：正式报告要求 100% coverage。轻量趋势报告至少要求 98% 的基础设施 coverage，并且只有不同 checkpoint 的已完成 sample ID 集合完全一致时才允许比较。
+中文翻译：报告必须始终显示这些数量。失败数量是否可接受由运行者判断；Phase 1 不实现 coverage 阈值或对齐成功子集比较。
 
 ## 23. Benchmark Status / Benchmark 状态
 
@@ -833,14 +908,12 @@ Formal reports require 100% coverage. Lightweight trend reports require at least
 pending
 running
 passed
-partial
 failed
 blocked
 skipped
 ```
 
 - `passed`: all planned samples completed and the result schema validated.
-- `partial`: scoring succeeded but infrastructure failures reduced coverage.
 - `failed`: prediction, evaluator, parsing, or result validation failed.
 - `blocked`: a required checkpoint, dataset, media file, dependency, credential, or service is unavailable.
 - `skipped`: the suite explicitly excluded the benchmark.
@@ -850,7 +923,6 @@ skipped
 - `pending`：等待执行。
 - `running`：正在执行。
 - `passed`：全部计划样本完成，且结果协议校验通过。
-- `partial`：评分成功，但基础设施失败导致 coverage 不完整。
 - `failed`：预测、evaluator、解析或结果校验失败。
 - `blocked`：缺少 checkpoint、数据、媒体、依赖、凭据或服务。
 - `skipped`：suite 明确跳过该 benchmark，并不表示测试通过。
@@ -861,91 +933,73 @@ Independent benchmarks continue after another benchmark fails. Suite status is t
 
 ## 24. Failure and Retry Policy / 失败与重试策略
 
-Only transient infrastructure failures are retried:
+Keep retries minimal:
 
-中文翻译：只有瞬时基础设施故障允许重试：
+中文翻译：重试策略保持最小化：
 
 ```text
-API requests: up to 3 retries with 2s, 8s, and 30s delays
-tool calls: up to 2 retries for transport failure only
-model service: one normal start and one retry on a new port
-W&B upload: up to 5 retries, then queue for later upload
-upstream evaluator process: no automatic restart by default
+API request: 1 retry after a short delay
+tool call: no automatic retry by default
+model or evaluator process: no automatic restart
+W&B upload: warn on failure; local result remains valid
 ```
 
 ```text
-API 请求：最多重试 3 次，等待 2 秒、8 秒、30 秒
-工具调用：仅传输故障最多重试 2 次
-模型服务：正常启动 1 次，失败后换端口再尝试 1 次
-W&B 上传：最多重试 5 次，之后进入待上传队列
-上游 evaluator 进程：默认不自动重启
+API 请求：短暂等待后最多重试 1 次
+工具调用：默认不自动重试
+模型或 evaluator 进程：不自动重启
+W&B 上传：失败时给出警告，本地结果仍然有效
 ```
 
 Invalid JSON, unknown tool names, invalid arguments, and incorrect answers are model results and are never retried.
 
 中文翻译：非法 JSON、未知工具名、非法参数和错误答案属于模型能力结果，绝不能通过重试掩盖。
 
-Configuration and data failures block execution during preflight. Evaluator crashes produce `failed`, preserve stdout and stderr, and do not create a synthetic score. W&B failure never changes a locally completed benchmark result.
+Configuration and data failures stop that benchmark. Evaluator crashes produce `failed`, preserve stdout and stderr, and do not create a synthetic score. The next benchmark may continue.
 
-中文翻译：配置或数据问题在 preflight 阶段直接阻止运行。evaluator 崩溃时状态记为 `failed`，保留 stdout/stderr，不能伪造分数。W&B 上传失败不能改变已经在本地完成的 benchmark 结果。
+中文翻译：配置或数据问题使当前 benchmark 停止。evaluator 崩溃时状态记为 `failed`，保留 stdout/stderr，不能伪造分数；之后可以继续运行下一个 benchmark。
 
-Final JSON and JSONL indexes are written to temporary files and atomically replaced.
+Normal file writes are sufficient for Phase 1. A malformed file is handled by rerunning the whole benchmark.
 
-中文翻译：最终 JSON 和 JSONL 索引先写入临时文件，完成后再进行原子替换，避免中断产生半截文件。
+中文翻译：Phase 1 使用普通文件写入即可。文件损坏时，整项重新运行 benchmark。
 
 ## 25. Resume Rules / 断点恢复规则
 
-中文翻译：恢复逻辑按照已有 artifact 的完整程度决定：
+Resume is whole-benchmark only:
+
+中文翻译：断点恢复只支持 benchmark 整项粒度：
 
 ```text
-valid result.json exists
+result.json exists plus --resume
   -> skip benchmark
 
-complete predictions exist
+complete predictions exist plus --score-only
   -> score only
 
-partial predictions exist
-  -> generate missing sample IDs, then score
-
-only raw upstream result exists
-  -> parse again
-
-only W&B upload is missing
-  -> upload only
-
-cache or comparability key differs
-  -> reject reuse and generate fresh predictions
+anything else
+  -> rerun benchmark from the beginning
 ```
 
 ```text
-存在合法 result.json
+存在 result.json 并指定 --resume
   -> 跳过该 benchmark
 
-存在完整 predictions
-  -> 只重新评分
+存在完整 predictions 并指定 --score-only
+  -> 只执行评分
 
-存在部分 predictions
-  -> 只生成缺失 sample ID，再评分
-
-只有上游原始结果
-  -> 重新解析
-
-只有 W&B 尚未上传
-  -> 只重新上传
-
-缓存键或可比性键不同
-  -> 拒绝复用，重新生成预测
+其他情况
+  -> 从头重新运行整个 benchmark
 ```
 
-## 26. Comparability Contract / 可比性契约
+## 26. Comparison Metadata / 对比元数据
 
-Formal checkpoint comparison requires equality of benchmark ID/version, manifest hash, sample-ID set, prompt/template hash, generation configuration, media preprocessing, tool schema/order, upstream evaluator version, ToolVista parser version, and required coverage.
+For checkpoint comparison, record benchmark, dataset/split, sample count, prompt/template, generation configuration, seed, evaluator, and upstream commit when available.
 
-中文翻译：正式 checkpoint 对比要求 benchmark ID/版本、manifest hash、sample ID 集合、prompt/template hash、生成配置、媒体预处理、工具 schema/顺序、上游 evaluator 版本、ToolVista parser 版本以及 coverage 要求全部一致。
+中文翻译：对比 checkpoint 时，记录 benchmark、测评集/split、样本数、prompt/template、生成配置、seed、evaluator，以及能够获取时的上游 commit。
 
-If any requirement differs, derived comparison metrics are `null` with an explicit reason. They are never replaced with zero.
+The summary script prints a warning when important fields differ. It does not block the comparison or calculate a comparability hash.
 
-中文翻译：任一条件不同，派生对比指标必须写为 `null` 并说明原因，不能使用 0 代替。
+中文翻译：重要字段不同时，汇总脚本打印警告；不阻止比较，也不计算 comparability hash。
 
 ## 27. Data Leakage Prevention / 数据泄漏防护
 
@@ -965,17 +1019,17 @@ official test -> final evaluation only
 官方 test -> 只用于最终评测
 ```
 
-When no official split exists, ToolVista creates a stable hash-based train/dev/test partition.
+When no official split exists, run a one-time fixed-seed split script and save explicit train/dev/test files. Later runs reuse those files directly.
 
-中文翻译：如果上游没有官方 split，ToolVista 使用稳定哈希创建 train/dev/test 划分。
+中文翻译：如果上游没有官方 split，就用固定 seed 一次性生成并保存明确的 train/dev/test 文件；后续运行直接复用这些文件。
 
-Every evaluation manifest stores manifest version, source project/commit/split, stable sample IDs, normalized text hashes, media hashes, tool-schema hashes, and a manifest hash.
+The evaluation split file stores source project, split, stable sample IDs, and normalized text where available. Git commit and dataset version are recorded when easy to obtain.
 
-中文翻译：每个 evaluation manifest 都保存 manifest 版本、来源项目/commit/split、稳定 sample ID、标准化文本 hash、媒体 hash、tool-schema hash 和整个 manifest 的 hash。
+中文翻译：评测 split 文件保存来源项目、split、稳定 sample ID，以及能够获得时的标准化文本。容易获取时再记录 git commit 和数据集版本。
 
-Cross-source deduplication checks stable IDs, normalized text, media hashes, and tool/answer content. Test solutions, tool outputs, and reward labels are not exposed to training prompts.
+Phase 1 checks duplicate sample IDs and exact normalized-text overlap. Media hashing, semantic deduplication, and tool/answer-content deduplication are optional later checks. Test solutions, tool outputs, and reward labels are not exposed to training prompts.
 
-中文翻译：跨数据源去重检查稳定 ID、标准化文本、媒体 hash 和工具/答案内容。测试答案、工具输出和 reward 标签不能暴露给训练 prompt。
+中文翻译：Phase 1 检查重复 sample ID 和标准化文本精确重合。媒体 hash、语义去重以及工具/答案内容去重作为后续可选检查。测试答案、工具输出和 reward 标签不能暴露给训练 prompt。
 
 ## 28. Checkpoint Selection / Checkpoint 选择
 
@@ -1047,9 +1101,9 @@ Compare results against training step, cumulative generated tokens, and cumulati
 
 ## 31. W&B and Local Storage / W&B 与本地存储
 
-Local JSON and JSONL remain the source of truth. W&B provides training curves, reward distributions, checkpoint tables, algorithm/seed comparisons, retention/forgetting curves, efficiency metrics, artifact references, and manifest hashes.
+Local JSON and JSONL remain the source of truth. W&B receives training curves, reward distributions, selected evaluation metrics, and algorithm/seed comparisons directly from the training or evaluation run.
 
-中文翻译：本地 JSON 和 JSONL 始终是事实来源。W&B 用于展示训练曲线、reward 分布、checkpoint 表格、算法/seed 对比、retention/forgetting 曲线、效率指标、artifact 引用和 manifest hash。
+中文翻译：本地 JSON 和 JSONL 始终是事实来源。W&B 直接接收训练曲线、reward 分布、选定评测指标和算法/seed 对比。
 
 Recommended W&B project:
 
@@ -1063,17 +1117,17 @@ Groups are `c1-xlam-sft`, `c2-toolvqa-sft`, `c3-mllm-router-sft`, `c4-unified-sf
 
 中文翻译：W&B group 按训练阶段划分为 `c1-xlam-sft`、`c2-toolvqa-sft`、`c3-mllm-router-sft`、`c4-unified-sft`、`r1-grpo`、`r2-bnpo`、`r3-dapo` 和 `r4-mat`。
 
-Only locally written and validated results are uploaded. W&B can be rebuilt from local artifacts without rerunning inference.
+W&B upload is optional. Upload failure prints a warning and does not trigger a queue or reconstruction workflow.
 
-中文翻译：只有已经在本地写入并通过校验的结果才能上传。即使 W&B 数据丢失，也必须能够只依靠本地 artifact 重建，而不需要重新推理。
+中文翻译：W&B 上传是可选功能。上传失败时打印警告，不进入任务队列，也不实现重建工作流。
 
 ## 32. Testing Strategy / 测试策略
 
 ### 32.1 Unit Tests / 单元测试
 
-Cover registry validation, suite expansion, converters, parsers, cache/comparability keys, status and coverage calculation, metric scaling, and resume planning.
+Cover registry parsing, command construction, converters, parsers, native scorers, metric scaling, and the two simple resume branches.
 
-中文翻译：覆盖 registry 校验、suite 展开、converter、parser、缓存键/可比性键、状态与 coverage 计算、指标缩放和恢复计划。
+中文翻译：覆盖 registry 解析、命令拼装、converter、parser、本地 scorer、指标缩放，以及两个简单恢复分支。
 
 ### 32.2 Contract Tests / 契约测试
 
@@ -1093,35 +1147,56 @@ Every benchmark runs 1 to 10 samples through preflight, prediction, conversion, 
 
 中文翻译：每个 benchmark 使用 1 到 10 条样本贯通 preflight、预测、转换、评分、结果校验和 artifact 写入。
 
-### 32.5 Recovery Tests / 恢复测试
+### 32.5 Simple Resume Tests / 简单恢复测试
 
-Simulate API timeout, HTTP 429/5xx, partial predictions, evaluator crash, missing result files, W&B failure, and tool-server failure.
+Verify that `--resume` skips a benchmark with `result.json`, and `--score-only` scores a complete predictions file. Other failures are covered by checking non-zero exit codes and preserved stderr.
 
-中文翻译：模拟 API 超时、HTTP 429/5xx、部分预测、evaluator 崩溃、结果文件缺失、W&B 失败和工具服务器失败。
+中文翻译：验证存在 `result.json` 时 `--resume` 会跳过整项，存在完整 predictions 文件时 `--score-only` 会只执行评分。其他失败只检查非零退出码和保存的 stderr。
 
-### 32.6 Leakage and Cache Tests / 泄漏与缓存测试
+### 32.6 Split Sanity Tests / 数据划分冒烟检查
 
-Training/evaluation manifests must not overlap under the configured ID, text, media, schema, answer, and tool-output hash rules. Changing model, prompt, generation settings, data, preprocessing, tool schema, or evaluator version must invalidate the correct cache layer.
+Check duplicate sample IDs and exact normalized-text overlap between the configured training and evaluation files. More expensive media and semantic deduplication is optional.
 
-中文翻译：训练和评测 manifest 按配置的 ID、文本、媒体、schema、答案和工具输出 hash 规则不能重合。模型、prompt、生成设置、数据、预处理、工具 schema 或 evaluator 版本发生变化时，必须使正确的缓存层失效。
+中文翻译：检查配置的训练文件和评测文件之间是否存在重复 sample ID 和标准化文本精确重合。成本更高的媒体去重和语义去重为可选项。
+
+### 32.7 Required Test Report / 必须说明的测试信息
+
+After generating or running any benchmark code, the implementation handoff must state:
+
+中文翻译：每次生成或运行 benchmark 代码后，交付说明必须明确写出：
+
+```text
+test method / 测试方式
+evaluation dataset and split / 测评集及 split
+source project / 来源项目
+upstream evaluator or ToolVista scorer / 使用的上游 evaluator 或 ToolVista scorer
+sample count or limit / 样本数或限制
+actual command / 实际启动命令
+main metrics / 主要指标
+result and artifact paths / 结果与 artifact 路径
+```
+
+This information is required in both the generated `result.json.test_summary` and the assistant's final handoff message.
+
+中文翻译：这些信息既要写入生成的 `result.json.test_summary`，也要在助手最终交付消息中说明。
 
 ## 33. Implementation Phases / 实施阶段
 
 ### Phase 1: Core and Immediately Usable Evaluation / 核心与可立即使用的评测
 
-中文翻译：Phase 1 实现统一 CLI、registry/suite loader、运行 manifest 与目录、`command` 和本地执行模式、`swift eval`/VLMEvalKit 集成、xLAM scorer、MLLM Router scorer、结果协议、retention/forgetting 聚合和 W&B 上传。
+中文翻译：Phase 1 实现简单统一 CLI、最小 registry/suite loader、简化运行目录、顺序命令执行、`swift eval`/VLMEvalKit 集成、xLAM scorer、MLLM Router scorer、小型结果 JSON、基础 retention/forgetting 汇总，以及可选 W&B 上传。
 
 ```text
 unified CLI
-registry and suite loader
-run manifest and artifact layout
-command and native execution modes
+minimal registry and suite loader
+small manifest and artifact layout
+sequential command and native execution
 swift eval / VLMEvalKit integration
 xLAM scorer
 MLLM Router scorer
-result protocol
-retention and forgetting aggregation
-W&B upload
+small result JSON with test_summary
+basic retention and forgetting summary
+optional W&B upload
 ```
 
 ### Phase 2: ToolVQA Step Evaluation / ToolVQA 逐步评测
@@ -1166,26 +1241,24 @@ Phase 1 is accepted when:
 中文翻译：Phase 1 满足以下条件时可以验收：
 
 1. One command evaluates a checkpoint with xLAM, MLLM Router, and a standard ms-swift/VLMEvalKit suite.
-2. A stopped run resumes without regenerating completed predictions.
-3. Model, prompt, data, and evaluator changes invalidate the correct cache layer.
-4. Raw upstream artifacts and ToolVista result envelopes are both preserved.
-5. W&B can be reconstructed from local artifacts without inference.
-6. Retention and forgetting are computed only for comparable results.
-7. Evaluator parity tests pass for every implemented bridge.
+2. `--resume` skips a completed benchmark and `--score-only` reuses a complete predictions file.
+3. Raw upstream results, parsed metrics, stdout, and stderr are preserved.
+4. Each result and handoff state the test method, dataset/split, source project, evaluator/scorer, sample count, command, and metrics.
+5. Training logs expose the available loss, learning-rate, gradient, throughput, memory, token, reward, KL, and duration metrics.
+6. Evaluator parity tests pass for every implemented bridge.
 
 中文翻译：
 
 1. 一个命令可以对同一 checkpoint 运行 xLAM、MLLM Router 和标准 ms-swift/VLMEvalKit 测试。
-2. 中断后的运行可以恢复，且不会重新生成已完成的预测。
-3. 模型、prompt、数据或 evaluator 发生变化时，正确的缓存层会失效。
-4. 上游原始 artifact 和 ToolVista 统一结果都得到保留。
-5. 不重新推理即可从本地 artifact 重建 W&B。
-6. retention 和 forgetting 只在结果具备可比性时计算。
-7. 每个已经实现的 bridge 都通过 evaluator parity 测试。
+2. `--resume` 能跳过已完成 benchmark，`--score-only` 能复用完整 predictions 文件。
+3. 保留上游原始结果、解析后的指标、stdout 和 stderr。
+4. 每份结果和交付说明都写明测试方式、测评集/split、来源项目、evaluator/scorer、样本数、命令和指标。
+5. 训练日志能够展示可获得的 loss、学习率、梯度、吞吐量、显存、token、reward、KL 和耗时指标。
+6. 每个已实现 bridge 都通过 evaluator parity 测试。
 
-The complete system is accepted when every training stage runs cumulative lightweight regression; major checkpoints run comprehensive evaluation; ToolVQA, Visual-RFT, and MAT preserve upstream semantics; nine formal RL runs are aggregated per seed and as mean/std; and all formal rows have immutable manifests, required coverage, complete provenance, and valid comparability keys.
+The complete system is accepted when every training stage runs cumulative lightweight regression; major checkpoints run comprehensive evaluation; ToolVQA, Visual-RFT, and MAT preserve upstream metric semantics; nine formal RL runs are aggregated per seed and as mean/std; and every reported score clearly identifies its test method, dataset, source project, evaluator, sample count, and command.
 
-中文翻译：完整系统的验收条件是：每个训练阶段都会运行累计轻量回测；关键 checkpoint 会运行完整评测；ToolVQA、Visual-RFT 和 MAT 保持上游指标语义；9 个正式 RL 运行按单 seed 和均值/标准差聚合；所有正式对比行都具备不可变 manifest、所需 coverage、完整 provenance 和合法 comparability key。
+中文翻译：完整系统的验收条件是：每个训练阶段都会运行累计轻量回测；关键 checkpoint 会运行完整评测；ToolVQA、Visual-RFT 和 MAT 保持上游指标语义；9 个正式 RL 运行按单 seed 和均值/标准差聚合；每个报告分数都清楚标识测试方式、测评集、来源项目、evaluator、样本数和启动命令。
 
 ## 35. Final Boundary / 最终职责边界
 
