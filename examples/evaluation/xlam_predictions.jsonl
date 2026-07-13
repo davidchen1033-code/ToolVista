@@ -1,0 +1,4 @@
+{"sample_id":"x1","target_tool_calls":[{"name":"get_weather","arguments":{"city":"Paris"}}],"prediction":"{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}"}
+{"sample_id":"x2","target_tool_calls":[{"name":"get_weather","arguments":{"city":"Tokyo"}}],"prediction":"not-json"}
+{"sample_id":"x3","target_tool_calls":[{"name":"get_weather","arguments":{"city":"Paris"}},{"name":"get_time","arguments":{"zone":"UTC"}}],"prediction":[{"name":"get_time","arguments":{"zone":"UTC"}},{"name":"get_weather","arguments":{"city":"Paris"}}]}
+{"sample_id":"x4","target_tool_calls":[{"name":"get_weather","arguments":{"city":"Paris","unit":"celsius"}}],"prediction":{"name":"get_weather","arguments":{"city":"London"}}}
