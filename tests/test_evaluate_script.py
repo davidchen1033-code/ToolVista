@@ -553,5 +553,38 @@ class EvaluateCLITest(unittest.TestCase):
         self.assertNotIn("token", command)
 
 
+class EvaluationDocumentationTest(unittest.TestCase):
+    def test_usage_doc_names_sources_commands_metrics_and_artifacts(self) -> None:
+        text = (REPO_ROOT / "docs" / "phase1_evaluation_usage.md").read_text(encoding="utf-8")
+
+        for required in (
+            "xLAM ActionStudio",
+            "MLLM-Tool",
+            "ms-swift",
+            "VLMEvalKit",
+            "ToolVista 内部开发回归集",
+            "不是上游官方 held-out test",
+            "python scripts/prepare_eval_data.py",
+            "当前没有 filter-only 模式",
+            "swift deploy",
+            "必须先停止 C1 服务",
+            "python scripts/evaluate.py",
+            "c0_base_seed42",
+            "c1_xlam_sft_seed42_xlam_rescore",
+            "--report_to wandb",
+            "--log_completions true",
+            "--log_entropy true",
+            "--log_rollout_offpolicy_metrics true",
+            "loss",
+            "grad_norm",
+            "reward_std",
+            "KL",
+            "runs/<run_id>/summary.json",
+            "swift_eval/",
+            "本地合同测试与真实模型结果的边界",
+        ):
+            self.assertIn(required, text)
+
+
 if __name__ == "__main__":
     unittest.main()
