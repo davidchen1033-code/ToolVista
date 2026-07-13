@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import unittest
 import uuid
 from pathlib import Path
@@ -20,6 +24,7 @@ from scripts.prepare_eval_data import (
     prepare_xlam_rows,
     validate_manifest,
 )
+from scripts.evaluate import _display_command, _metrics_from_summary, _print_test_handoff, parse_args
 from toolvista.schema.canonical import CanonicalMessage, CanonicalSample
 from toolvista.utils.paths import ToolVistaPaths
 
@@ -331,6 +336,221 @@ class PrepareEvaluationDataTest(unittest.TestCase):
         self.assertEqual(first.read_text(encoding="utf-8"), "old-first\n")
         self.assertEqual(second.read_text(encoding="utf-8"), "old-second\n")
         self.assertEqual(sorted(path.name for path in directory.iterdir()), ["first.jsonl", "second.jsonl"])
+
+
+class EvaluateCLITest(unittest.TestCase):
+    def make_temp_dir(self) -> Path:
+        path = REPO_ROOT / "tests" / f"tmp-evaluate-cli-{uuid.uuid4().hex}"
+        path.mkdir()
+        self.addCleanup(shutil.rmtree, path, True)
+        return path
+
+    def test_score_only_cli_runs_one_native_benchmark_end_to_end(self) -> None:
+        fixture = REPO_ROOT / "examples" / "evaluation" / "xlam_predictions.jsonl"
+        root = self.make_temp_dir()
+        benchmark_dir = root / "runs" / "smoke" / "eval" / "xlam_function_calling"
+        benchmark_dir.mkdir(parents=True)
+        shutil.copyfile(fixture, benchmark_dir / "predictions.jsonl")
+
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "evaluate.py"),
+                "--config",
+                str(REPO_ROOT / "configs" / "evaluation" / "benchmarks.yaml"),
+                "--suite-config",
+                str(REPO_ROOT / "configs" / "evaluation" / "suites.yaml"),
+                "--benchmark",
+                "xlam_function_calling",
+                "--checkpoint",
+                "checkpoint",
+                "--run-id",
+                "smoke",
+                "--runs-root",
+                str(root / "runs"),
+                "--score-only",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(process.returncode, 0, process.stderr)
+        summary = json.loads((root / "runs" / "smoke" / "summary.json").read_text(encoding="utf-8"))
+        result = json.loads((benchmark_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(result["prediction_mode"], "score_only")
+        self.assertEqual(result["test_summary"]["sample_count"], 4)
+        self.assertIn("测试方式", process.stdout)
+        self.assertIn("结果与 artifact 路径", process.stdout)
+
+    def test_score_only_rejects_a_suite_or_swift_benchmark(self) -> None:
+        selections = (
+            ("--suite", "c1_light"),
+            ("--benchmark", "qwen3vl_general_light"),
+        )
+        for selection_flag, selection_value in selections:
+            with self.subTest(selection=selection_value):
+                process = subprocess.run(
+                    [
+                        sys.executable,
+                        str(REPO_ROOT / "scripts" / "evaluate.py"),
+                        selection_flag,
+                        selection_value,
+                        "--checkpoint",
+                        "checkpoint",
+                        "--run-id",
+                        "invalid",
+                        "--score-only",
+                    ],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(process.returncode, 0)
+                self.assertIn("one native --benchmark", process.stderr)
+
+        root = self.make_temp_dir()
+        suite_config = root / "suites.json"
+        suite_config.write_text(
+            json.dumps({"suites": {"one_native": ["xlam_function_calling"]}}),
+            encoding="utf-8",
+        )
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "evaluate.py"),
+                "--suite-config",
+                str(suite_config),
+                "--suite",
+                "one_native",
+                "--checkpoint",
+                "checkpoint",
+                "--run-id",
+                "invalid",
+                "--score-only",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("one native --benchmark", process.stderr)
+
+    def test_run_id_cannot_escape_runs_root(self) -> None:
+        root = self.make_temp_dir()
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "evaluate.py"),
+                "--benchmark",
+                "xlam_function_calling",
+                "--checkpoint",
+                "checkpoint",
+                "--run-id",
+                "../escaped",
+                "--runs-root",
+                str(root / "runs"),
+                "--score-only",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("path-safe component", process.stderr)
+        self.assertFalse((root / "escaped").exists())
+
+    def test_cli_rejects_invalid_checkpoint_timeout_and_comparison_metrics(self) -> None:
+        base_args = [
+            "--benchmark",
+            "xlam_function_calling",
+            "--checkpoint",
+            "checkpoint",
+            "--run-id",
+            "run",
+        ]
+        invalid_argv = (
+            [*base_args[:3], " ", *base_args[4:]],
+            [*base_args[:3], " checkpoint ", *base_args[4:]],
+            [*base_args, "--timeout", "0"],
+            [*base_args, "--timeout", "-1"],
+            [*base_args, "--timeout", "nan"],
+            [*base_args, "--timeout", "inf"],
+            [*base_args, "--infer-backend", " "],
+            [*base_args, "--infer-backend", " vllm "],
+            [*base_args, "--swift-executable", " "],
+            [*base_args, "--wandb-project", " "],
+        )
+        for argv in invalid_argv:
+            with (
+                self.subTest(argv=argv),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                parse_args(argv)
+
+        root = self.make_temp_dir()
+        invalid_metrics = (
+            {"ok": 0.5, "bad": "0.9"},
+            {"ok": 0.5, "flag": True},
+            {"ok": 0.5, "missing": None},
+            {"ok": 0.5, "infinite": float("inf")},
+            {"": 0.5},
+        )
+        for index, metrics in enumerate(invalid_metrics):
+            with self.subTest(metrics=metrics):
+                summary_path = root / f"summary-{index}.json"
+                summary_path.write_text(json.dumps({"metrics": metrics}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "metric"):
+                    _metrics_from_summary(summary_path)
+
+    def test_handoff_warns_and_continues_for_missing_or_malformed_results(self) -> None:
+        root = self.make_temp_dir()
+        malformed = root / "malformed.json"
+        malformed.write_text("{not-json", encoding="utf-8")
+        incomplete = root / "incomplete.json"
+        incomplete.write_text(json.dumps({"status": "passed"}), encoding="utf-8")
+        summary = {
+            "run_id": "run",
+            "benchmarks": {
+                "missing": {"result_path": (root / "missing.json").as_posix()},
+                "malformed": {"result_path": malformed.as_posix()},
+                "incomplete": {"result_path": incomplete.as_posix()},
+            },
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            _print_test_handoff(summary)
+
+        self.assertIn('"run_id": "run"', stdout.getvalue())
+        self.assertIn("unable to print test handoff for missing", stderr.getvalue())
+        self.assertIn("unable to print test handoff for malformed", stderr.getvalue())
+        self.assertIn("unable to print test handoff for incomplete", stderr.getvalue())
+
+    def test_display_command_redacts_url_credentials_and_query_tokens(self) -> None:
+        command = _display_command(
+            [
+                "--api-base",
+                "https://user:secret@example.test/v1?api_key=secret",
+                "--eval-url=https://eval-secret@example.test/v1?token=secret",
+                "--checkpoint",
+                "checkpoint",
+            ]
+        )
+
+        self.assertIn("https://example.test/v1", command)
+        self.assertNotIn("secret", command)
+        self.assertNotIn("api_key", command)
+        self.assertNotIn("token", command)
 
 
 if __name__ == "__main__":
