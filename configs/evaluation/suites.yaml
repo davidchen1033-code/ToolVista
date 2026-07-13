@@ -1,0 +1,13 @@
+suites:
+  c1_light:
+    - xlam_function_calling
+    - qwen3vl_general_light
+
+  c3_light:
+    - xlam_function_calling
+    - mllm_router
+    - qwen3vl_general_light
+
+  phase1_smoke:
+    - xlam_function_calling
+    - mllm_router

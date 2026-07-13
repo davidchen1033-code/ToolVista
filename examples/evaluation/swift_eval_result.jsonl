@@ -1,0 +1,4 @@
+{"Native":{"dummy":{"acc":1.0}},"eval_output_dir":"runs/other","eval_limit":1}
+{"VLMEvalKit":{"RealWorldQA":{"acc":50.0}},"eval_output_dir":"F:/code/ToolVista/runs/demo/eval/qwen3vl_general_light/swift_eval","eval_limit":10}
+{"VLMEvalKit":{"RealWorldQA":{"acc":25.0}},"eval_output_dir":"runs/old","eval_limit":10}
+{"VLMEvalKit":{"RealWorldQA":{"acc":67.5},"OCRBench":{"score":700}},"time":"2026-07-13 12:00:00","model":"checkpoint","adapters":[],"result_path":null,"eval_output_dir":"F:/code/ToolVista/runs/demo/eval/qwen3vl_general_light/swift_eval","eval_limit":100}
