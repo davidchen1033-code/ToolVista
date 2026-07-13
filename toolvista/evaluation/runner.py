@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from toolvista.evaluation.io import load_json, load_jsonl, write_json, write_jsonl
+from toolvista.evaluation.io import (
+    load_json,
+    load_jsonl,
+    normalize_swift_metrics,
+    read_last_swift_eval_report,
+    write_json,
+    write_jsonl,
+)
 from toolvista.evaluation.models import BenchmarkSpec, EvaluationResult, TestSummary
 from toolvista.evaluation.scorers import score_mllm_router, score_xlam
 
 
 PredictionClient = Callable[..., Mapping[str, Any]]
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def call_chat_completion(
@@ -250,6 +260,241 @@ def run_native_benchmark(
             "duration_seconds": time.perf_counter() - start,
             "peak_gpu_memory_mb": None,
             "exit_code": 0 if failed == 0 else 1,
+        },
+        artifacts=artifacts,
+    )
+    write_json(result_path, result.to_dict())
+    return result
+
+
+def build_swift_eval_command(
+    spec: BenchmarkSpec,
+    *,
+    checkpoint: str,
+    eval_output_dir: Path,
+    infer_backend: str,
+    eval_url: str | None,
+    swift_executable: str,
+) -> list[str]:
+    """Build the argv passed directly to ms-swift's upstream evaluator."""
+    if spec.execution != "swift_eval" or not spec.eval_backend or not spec.swift_datasets:
+        raise ValueError(f"Invalid swift eval benchmark: {spec.benchmark_id}")
+    for name, value in (
+        ("checkpoint", checkpoint),
+        ("infer_backend", infer_backend),
+        ("swift_executable", swift_executable),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"swift eval requires non-empty {name}.")
+    command = [
+        swift_executable,
+        "eval",
+        "--model",
+        checkpoint,
+        "--eval_backend",
+        spec.eval_backend,
+        "--infer_backend",
+        infer_backend,
+        "--eval_dataset",
+        *spec.swift_datasets,
+    ]
+    if spec.eval_limit is not None:
+        command.extend(["--eval_limit", str(spec.eval_limit)])
+    command.extend(
+        [
+            "--eval_output_dir",
+            eval_output_dir.as_posix(),
+            "--eval_generation_config",
+            '{"max_tokens":512,"temperature":0}',
+        ]
+    )
+    if eval_url:
+        command.extend(["--eval_url", eval_url])
+    return command
+
+
+def _resolve_checkpoint_reference(checkpoint: str) -> str:
+    source = Path(checkpoint).expanduser()
+    if source.exists():
+        return source.resolve().as_posix()
+    return checkpoint
+
+
+def _swift_result_candidates(checkpoint: str, benchmark_dir: Path) -> list[Path]:
+    source = Path(checkpoint)
+    candidates = [source / "eval_result.jsonl"] if source.is_dir() else []
+    candidates.extend(sorted((benchmark_dir / "result").rglob("eval_result.jsonl")))
+    return candidates
+
+
+def _swift_result_row_counts(checkpoint: str, benchmark_dir: Path) -> dict[Path, int]:
+    counts: dict[Path, int] = {}
+    for candidate in _swift_result_candidates(checkpoint, benchmark_dir):
+        try:
+            with candidate.open("r", encoding="utf-8") as handle:
+                counts[candidate.resolve()] = sum(1 for line in handle if line.strip())
+        except FileNotFoundError:
+            continue
+    return counts
+
+
+def _read_swift_report(
+    checkpoint: str,
+    benchmark_dir: Path,
+    *,
+    backend: str,
+    eval_output_dir: Path,
+    previous_row_counts: Mapping[Path, int],
+) -> dict[str, Any]:
+    errors: list[str] = []
+    for candidate in _swift_result_candidates(checkpoint, benchmark_dir):
+        try:
+            rows = load_jsonl(candidate)
+            previous_count = previous_row_counts.get(candidate.resolve(), 0)
+            if len(rows) <= previous_count:
+                errors.append(f"No new swift eval report rows in {candidate}")
+                continue
+            report = read_last_swift_eval_report(
+                candidate,
+                backend=backend,
+                eval_output_dir=eval_output_dir,
+            )
+            if report not in rows[previous_count:]:
+                errors.append(f"No new matching swift eval report in {candidate}")
+                continue
+            return report
+        except (FileNotFoundError, ValueError) as exc:
+            errors.append(str(exc))
+    raise ValueError(f"Could not find matching swift eval report: {errors}")
+
+
+def run_swift_benchmark(
+    spec: BenchmarkSpec,
+    *,
+    checkpoint: str,
+    run_id: str,
+    benchmark_dir: Path,
+    infer_backend: str,
+    eval_url: str | None,
+    resume: bool,
+    swift_executable: str = "swift",
+    command_runner: CommandRunner = subprocess.run,
+) -> EvaluationResult:
+    """Run ms-swift/VLMEvalKit and wrap its unmodified report and logs."""
+    benchmark_dir.mkdir(parents=True, exist_ok=True)
+    result_path = benchmark_dir / "result.json"
+    if resume and result_path.is_file():
+        return EvaluationResult.from_dict(load_json(result_path))
+    if result_path.is_file():
+        result_path.unlink()
+
+    resolved_checkpoint = _resolve_checkpoint_reference(checkpoint)
+    eval_output_dir = (benchmark_dir / "swift_eval").resolve()
+    command = build_swift_eval_command(
+        spec,
+        checkpoint=resolved_checkpoint,
+        eval_output_dir=eval_output_dir,
+        infer_backend=infer_backend,
+        eval_url=eval_url,
+        swift_executable=swift_executable,
+    )
+    stdout_path = benchmark_dir / "stdout.log"
+    stderr_path = benchmark_dir / "stderr.log"
+    upstream_path = benchmark_dir / "upstream_result.json"
+    if upstream_path.is_file():
+        upstream_path.unlink()
+    artifacts = {
+        "stdout": stdout_path.as_posix(),
+        "stderr": stderr_path.as_posix(),
+        "swift_eval_output": eval_output_dir.as_posix(),
+    }
+
+    start = time.perf_counter()
+    previous_row_counts = _swift_result_row_counts(resolved_checkpoint, benchmark_dir)
+    launch_error: Exception | None = None
+    completed_process: subprocess.CompletedProcess[str] | None = None
+    try:
+        completed_process = command_runner(
+            command,
+            cwd=benchmark_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        launch_error = exc
+    duration = time.perf_counter() - start
+
+    stdout = completed_process.stdout or "" if completed_process is not None else ""
+    stderr = completed_process.stderr or "" if completed_process is not None else ""
+    if launch_error is not None:
+        stderr = f"{type(launch_error).__name__}: {launch_error}\n"
+    stdout_path.write_text(stdout, encoding="utf-8")
+    stderr_path.write_text(stderr, encoding="utf-8")
+
+    exit_code = completed_process.returncode if completed_process is not None else None
+    status = "failed" if launch_error is not None or exit_code != 0 else "passed"
+    upstream_metrics: dict[str, Any] = {}
+    metrics: dict[str, float] = {}
+    if status == "passed":
+        try:
+            report = _read_swift_report(
+                resolved_checkpoint,
+                benchmark_dir,
+                backend=str(spec.eval_backend),
+                eval_output_dir=eval_output_dir,
+                previous_row_counts=previous_row_counts,
+            )
+            write_json(upstream_path, report)
+            artifacts["upstream_result"] = upstream_path.as_posix()
+            upstream_metrics, metrics = normalize_swift_metrics(
+                report,
+                backend=str(spec.eval_backend),
+                metric_scales=spec.metric_scales,
+            )
+            missing_metrics = [metric for metric in spec.primary_metrics if metric not in metrics]
+            if missing_metrics:
+                raise ValueError(f"swift eval report is missing primary metrics: {missing_metrics}")
+        except Exception as exc:
+            status = "failed"
+            upstream_metrics = {}
+            metrics = {}
+            separator = "\n" if stderr else ""
+            with stderr_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"{separator}{type(exc).__name__}: {exc}\n")
+
+    planned = (spec.eval_limit or 0) * len(spec.swift_datasets)
+    process_exit_code = completed_process.returncode if completed_process is not None else None
+    benchmark_exit_code = 0 if status == "passed" else process_exit_code or 1
+    result = EvaluationResult(
+        schema_version="1.0",
+        run_id=run_id,
+        checkpoint=checkpoint,
+        benchmark=spec.benchmark_id,
+        profile=spec.profile,
+        prediction_mode="fresh",
+        test_summary=TestSummary(
+            method=spec.method,
+            dataset=f"{spec.dataset_name} / {spec.split}",
+            source_project=spec.source_project,
+            evaluator=spec.evaluator,
+            sample_count=spec.eval_limit,
+            command=shlex.join(command),
+            main_metrics=spec.primary_metrics,
+            result_path=result_path.as_posix(),
+            artifact_paths=artifacts,
+        ),
+        status=status,  # type: ignore[arg-type]
+        attempted=planned,
+        completed=planned if status == "passed" else 0,
+        failed=0 if status == "passed" else planned,
+        upstream_metrics=upstream_metrics,
+        metrics=metrics,
+        runtime={
+            "duration_seconds": duration,
+            "peak_gpu_memory_mb": None,
+            "exit_code": benchmark_exit_code,
+            "process_exit_code": process_exit_code,
         },
         artifacts=artifacts,
     )
