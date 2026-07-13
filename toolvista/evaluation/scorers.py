@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 import json
 import math
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 
@@ -275,4 +276,192 @@ def score_xlam(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             for name, value in upstream_metrics.items()
             if name != "parallel_samples"
         },
+    }
+
+
+def _f1(target: set[int], prediction: set[int]) -> float:
+    if not target and not prediction:
+        return 0.0
+    true_positive = len(target & prediction)
+    return 2 * true_positive / (len(target) + len(prediction))
+
+
+def _route_predictions(value: Any) -> tuple[list[str], bool]:
+    if isinstance(value, str):
+        value = value.strip()
+        return ([value], True) if value else ([], False)
+    if isinstance(value, list):
+        if not value or not all(isinstance(item, str) and item.strip() for item in value):
+            return [], False
+        predictions = [item.strip() for item in value]
+        if len(set(predictions)) != len(predictions):
+            return [], False
+        return predictions, True
+    return [], False
+
+
+def _router_targets(row: Mapping[str, Any], row_number: int) -> set[str]:
+    value = row.get("target_tools")
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item.strip() for item in value)
+    ):
+        raise ValueError(
+            f"MLLM Router row {row.get('sample_id', row_number)!r} requires "
+            "a non-empty list of non-blank strings in target_tools."
+        )
+    return {item.strip() for item in value}
+
+
+def _router_modality(row: Mapping[str, Any], row_number: int) -> str:
+    value = row.get("input_modality")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"MLLM Router row {row.get('sample_id', row_number)!r} requires "
+            "a non-blank input_modality string."
+        )
+    normalized = value.strip().lower()
+    if any(ord(character) < 32 or ord(character) == 127 for character in value) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9_-]*", normalized
+    ):
+        raise ValueError(
+            f"MLLM Router row {row.get('sample_id', row_number)!r} requires "
+            "input_modality to be a compact identifier."
+        )
+    return normalized
+
+
+def _router_catalog(row: Mapping[str, Any], row_number: int) -> set[str] | None:
+    if "router_catalog" not in row:
+        return None
+    value = row.get("router_catalog")
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item.strip() for item in value)
+    ):
+        raise ValueError(
+            f"MLLM Router row {row.get('sample_id', row_number)!r} requires "
+            "router_catalog to be a non-empty list of non-blank strings."
+        )
+    return {item.strip() for item in value}
+
+
+def score_mllm_router(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    materialized = list(rows)
+    validated_rows: list[tuple[int, Mapping[str, Any], set[str], str, set[str] | None]] = []
+    failed = 0
+    for row_index, row in enumerate(materialized):
+        if row.get("error"):
+            failed += 1
+            continue
+        target_tools = _router_targets(row, row_index + 1)
+        validated_rows.append(
+            (
+                row_index,
+                row,
+                target_tools,
+                _router_modality(row, row_index + 1),
+                _router_catalog(row, row_index + 1),
+            )
+        )
+    catalogs = [catalog for _, _, _, _, catalog in validated_rows if catalog is not None]
+    if catalogs:
+        shared_catalog = catalogs[0]
+        for row_index, row, target_tools, _, catalog in validated_rows:
+            if catalog is None or catalog != shared_catalog:
+                raise ValueError(
+                    f"MLLM Router row {row.get('sample_id', row_index + 1)!r} must use "
+                    "the same router_catalog as every completed row."
+                )
+            missing_targets = target_tools - catalog
+            if missing_targets:
+                raise ValueError(
+                    f"MLLM Router row {row.get('sample_id', row_index + 1)!r} has target_tools "
+                    f"not present in router_catalog: {sorted(missing_targets)!r}."
+                )
+        valid_route_universe = set(shared_catalog)
+    else:
+        valid_route_universe = {
+            route for _, _, target_tools, _, _ in validated_rows for route in target_tools
+        }
+    attempted = len(materialized)
+    completed = len(validated_rows)
+    format_valid: list[float] = []
+    top1_scores: list[float] = []
+    candidate_hits: list[float] = []
+    invalid_routes: list[float] = []
+    modality_scores: dict[str, list[float]] = {}
+    targets_by_label: dict[str, list[int]] = {}
+    predictions_by_label: dict[str, list[int]] = {}
+    confusion_counts: dict[str, Counter[str]] = {}
+
+    for row_index, row, target_tools, modality, _ in validated_rows:
+        predictions, is_valid = _route_predictions(row.get("prediction"))
+        predicted_set = set(predictions)
+        top1_correct = float(bool(predictions) and predictions[0] in target_tools)
+        candidate_hit = float(bool(target_tools & predicted_set))
+        invalid_route = float(
+            not predictions or any(route not in valid_route_universe for route in predictions)
+        )
+        format_valid.append(float(is_valid))
+        top1_scores.append(top1_correct)
+        candidate_hits.append(candidate_hit)
+        invalid_routes.append(invalid_route)
+        modality_scores.setdefault(modality, []).append(top1_correct)
+        predicted_label = (
+            json.dumps(predictions[0], ensure_ascii=False, separators=(",", ":"))
+            if predictions
+            else "null"
+        )
+        target_label = json.dumps(
+            sorted(target_tools), ensure_ascii=False, separators=(",", ":")
+        )
+        confusion_counts.setdefault(target_label, Counter())[predicted_label] += 1
+
+        for label in target_tools | predicted_set:
+            targets_by_label.setdefault(label, []).append(row_index if label in target_tools else -1)
+            predictions_by_label.setdefault(label, []).append(row_index if label in predicted_set else -1)
+
+    label_f1: list[float] = []
+    for label in sorted(set(targets_by_label) | set(predictions_by_label)):
+        target_indices = {index for index in targets_by_label.get(label, []) if index >= 0}
+        predicted_indices = {index for index in predictions_by_label.get(label, []) if index >= 0}
+        label_f1.append(_f1(target_indices, predicted_indices))
+
+    accuracy_by_modality = {
+        name: _mean(scores) for name, scores in sorted(modality_scores.items())
+    }
+    confusion_matrix = {
+        target: dict(sorted(predictions.items()))
+        for target, predictions in sorted(confusion_counts.items())
+    }
+    upstream_metrics: dict[str, Any] = {
+        "format_valid_rate": _mean(format_valid),
+        "top1_accuracy": _mean(top1_scores),
+        "top_k_accuracy": _mean(candidate_hits),
+        "candidate_hit_rate": _mean(candidate_hits),
+        "macro_f1": _mean(label_f1),
+        "invalid_route_rate": _mean(invalid_routes),
+        "accuracy_by_modality": accuracy_by_modality,
+        "confusion_matrix": confusion_matrix,
+    }
+    normalized = {
+        f"mllm_router/{name}": float(value)
+        for name, value in upstream_metrics.items()
+        if isinstance(value, (int, float))
+    }
+    normalized.update(
+        {
+            f"mllm_router/accuracy_by_modality/{modality}": score
+            for modality, score in accuracy_by_modality.items()
+        }
+    )
+    return {
+        "attempted": attempted,
+        "completed": completed,
+        "failed": failed,
+        "upstream_metrics": upstream_metrics,
+        "metrics": normalized,
     }

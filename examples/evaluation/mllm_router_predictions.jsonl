@@ -1,0 +1,4 @@
+{"sample_id":"m1","input_modality":"text","target_tools":["route_a","route_alt"],"prediction":"route_alt"}
+{"sample_id":"m2","input_modality":"image","target_tools":["route_b"],"prediction":["route_x","route_b"]}
+{"sample_id":"m3","input_modality":"text","target_tools":["route_a"],"prediction":""}
+{"sample_id":"m4","input_modality":"image","target_tools":["route_b"],"prediction":"route_b"}
