@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import importlib
 import json
 import shlex
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from math import isfinite
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -500,3 +504,445 @@ def run_swift_benchmark(
     )
     write_json(result_path, result.to_dict())
     return result
+
+
+def _finite_metric(value: Any, *, name: str, source: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{source} metric {name!r} must be a finite number.")
+    numeric = float(value)
+    if not isfinite(numeric):
+        raise ValueError(f"{source} metric {name!r} must be finite.")
+    return numeric
+
+
+def calculate_comparisons(
+    current_metrics: Mapping[str, float],
+    *,
+    baseline_metrics: Mapping[str, float],
+    historical_metrics: Sequence[Mapping[str, float]],
+    metric_directions: Mapping[str, str],
+) -> dict[str, dict[str, float]]:
+    """Compare current metrics with one baseline and prior summaries."""
+    comparisons: dict[str, dict[str, float]] = {}
+    for metric_name, direction in sorted(metric_directions.items()):
+        if direction not in {"maximize", "minimize"}:
+            raise ValueError(f"Metric {metric_name!r} has invalid direction: {direction!r}")
+        if metric_name not in current_metrics:
+            continue
+
+        current = _finite_metric(
+            current_metrics[metric_name], name=metric_name, source="current"
+        )
+        row: dict[str, float] = {"current": current}
+        base: float | None = None
+        if metric_name in baseline_metrics:
+            base = _finite_metric(
+                baseline_metrics[metric_name], name=metric_name, source="baseline"
+            )
+            row["base"] = base
+            row["gain_vs_base"] = current - base if direction == "maximize" else base - current
+            if direction == "maximize" and base != 0.0:
+                row["retention"] = current / base
+            elif direction == "minimize" and current != 0.0:
+                row["retention"] = base / current
+
+        history = [
+            _finite_metric(values[metric_name], name=metric_name, source="historical")
+            for values in historical_metrics
+            if metric_name in values
+        ]
+        if base is not None:
+            history.append(base)
+        if history:
+            historical_best = max(history) if direction == "maximize" else min(history)
+            row["historical_best"] = historical_best
+            raw_forgetting = (
+                historical_best - current
+                if direction == "maximize"
+                else current - historical_best
+            )
+            row["forgetting"] = max(0.0, raw_forgetting)
+        comparisons[metric_name] = row
+    return comparisons
+
+
+def _exception_result(
+    spec: BenchmarkSpec,
+    *,
+    checkpoint: str,
+    run_id: str,
+    benchmark_dir: Path,
+    display_command: str,
+    score_only: bool,
+    error: Exception,
+) -> EvaluationResult:
+    benchmark_dir.mkdir(parents=True, exist_ok=True)
+    stderr_path = benchmark_dir / "stderr.log"
+    stdout_path = benchmark_dir / "stdout.log"
+    result_path = benchmark_dir / "result.json"
+    stderr_path.write_text(f"{type(error).__name__}: {error}\n", encoding="utf-8")
+    stdout_path.write_text("", encoding="utf-8")
+    artifacts = {"stdout": stdout_path.as_posix(), "stderr": stderr_path.as_posix()}
+    result = EvaluationResult(
+        schema_version="1.0",
+        run_id=run_id,
+        checkpoint=checkpoint,
+        benchmark=spec.benchmark_id,
+        profile=spec.profile,
+        prediction_mode="score_only" if score_only else "fresh",
+        test_summary=TestSummary(
+            method=spec.method,
+            dataset=f"{spec.dataset_name} / {spec.split}",
+            source_project=spec.source_project,
+            evaluator=spec.evaluator,
+            sample_count=spec.eval_limit,
+            command=display_command,
+            main_metrics=spec.primary_metrics,
+            result_path=result_path.as_posix(),
+            artifact_paths=artifacts,
+        ),
+        status="failed",
+        attempted=0,
+        completed=0,
+        failed=0,
+        upstream_metrics={},
+        metrics={},
+        runtime={"duration_seconds": 0.0, "peak_gpu_memory_mb": None, "exit_code": 1},
+        artifacts=artifacts,
+    )
+    write_json(result_path, result.to_dict())
+    return result
+
+
+def _suite_status(results: Sequence[EvaluationResult]) -> str:
+    if any(result.status in {"failed", "blocked"} for result in results):
+        return "failed"
+    if all(result.status == "skipped" for result in results):
+        return "skipped"
+    return "passed"
+
+
+def _validate_suite_specs(specs: Sequence[BenchmarkSpec]) -> None:
+    if not specs:
+        raise ValueError("An evaluation suite requires at least one benchmark.")
+    benchmark_ids: set[str] = set()
+    metric_owners: dict[str, str] = {}
+    for spec in specs:
+        if spec.benchmark_id in benchmark_ids:
+            raise ValueError(f"Evaluation suite contains duplicate benchmark: {spec.benchmark_id}")
+        benchmark_ids.add(spec.benchmark_id)
+        for metric_name in spec.metric_directions:
+            owner = metric_owners.get(metric_name)
+            if owner is not None:
+                raise ValueError(
+                    f"Evaluation suite contains duplicate metric {metric_name!r} in "
+                    f"{owner!r} and {spec.benchmark_id!r}."
+                )
+            metric_owners[metric_name] = spec.benchmark_id
+
+
+def _validate_result_identity(
+    result: EvaluationResult,
+    spec: BenchmarkSpec,
+    *,
+    checkpoint: str,
+    run_id: str,
+    benchmark_dir: Path,
+) -> None:
+    mismatches: list[str] = []
+    expected_values = {
+        "run_id": run_id,
+        "checkpoint": checkpoint,
+        "benchmark": spec.benchmark_id,
+        "profile": spec.profile,
+    }
+    for name, expected in expected_values.items():
+        actual = getattr(result, name)
+        if actual != expected:
+            mismatches.append(f"{name}={actual!r}, expected {expected!r}")
+    if result.test_summary.main_metrics != spec.primary_metrics:
+        mismatches.append(
+            f"main_metrics={result.test_summary.main_metrics!r}, expected {spec.primary_metrics!r}"
+        )
+    expected_result_path = (benchmark_dir / "result.json").resolve()
+    if Path(result.test_summary.result_path).resolve() != expected_result_path:
+        mismatches.append(
+            f"result_path={result.test_summary.result_path!r}, expected {expected_result_path.as_posix()!r}"
+        )
+    if result.status == "passed":
+        missing_metrics = [metric for metric in spec.primary_metrics if metric not in result.metrics]
+        if missing_metrics:
+            mismatches.append(f"missing primary metrics={missing_metrics!r}")
+    if mismatches:
+        raise ValueError("Evaluation result does not match requested benchmark: " + "; ".join(mismatches))
+
+
+def _flat_metrics(results: Sequence[EvaluationResult]) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    owners: dict[str, str] = {}
+    for result in results:
+        for metric_name, value in result.metrics.items():
+            owner = owners.get(metric_name)
+            if owner is not None:
+                raise ValueError(
+                    f"Evaluation results contain duplicate metric {metric_name!r} in "
+                    f"{owner!r} and {result.benchmark!r}."
+                )
+            metrics[metric_name] = _finite_metric(
+                value, name=metric_name, source=f"benchmark {result.benchmark!r}"
+            )
+            owners[metric_name] = result.benchmark
+    return metrics
+
+
+def _metric_directions(specs: Sequence[BenchmarkSpec]) -> dict[str, str]:
+    return {
+        metric_name: direction
+        for spec in specs
+        for metric_name, direction in spec.metric_directions.items()
+    }
+
+
+def _toolvista_commit() -> str | None:
+    try:
+        process = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    return process.stdout.strip() if process.returncode == 0 else None
+
+
+def _safe_endpoint(value: str | None) -> str | None:
+    """Keep endpoint provenance without persisting credentials or query tokens."""
+    if not value:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if not parsed.scheme or not parsed.hostname:
+            return None
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    except ValueError:
+        return None
+
+
+def evaluate_suite(
+    specs: Sequence[BenchmarkSpec],
+    *,
+    checkpoint: str,
+    run_id: str,
+    runs_root: Path,
+    api_base: str | None,
+    api_model: str | None,
+    infer_backend: str,
+    eval_url: str | None,
+    timeout: float,
+    score_only: bool,
+    resume: bool,
+    display_command: str,
+    stage: str | None,
+    algorithm: str | None,
+    seed: int,
+    baseline_metrics: Mapping[str, float],
+    historical_metrics: Sequence[Mapping[str, float]],
+    swift_executable: str = "swift",
+    native_runner: Callable[..., EvaluationResult] = run_native_benchmark,
+    swift_runner: Callable[..., EvaluationResult] = run_swift_benchmark,
+) -> dict[str, Any]:
+    """Run a suite sequentially and write one local manifest and summary."""
+    _validate_suite_specs(specs)
+    run_dir = runs_root / run_id
+    eval_dir = run_dir / "eval"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for stale_path in (run_dir / "manifest.json", run_dir / "summary.json"):
+        if stale_path.is_file():
+            stale_path.unlink()
+    if not resume:
+        for spec in specs:
+            stale_result = eval_dir / spec.benchmark_id / "result.json"
+            if stale_result.is_file():
+                stale_result.unlink()
+    start_time = dt.datetime.now(dt.timezone.utc)
+    results: list[EvaluationResult] = []
+
+    for spec in specs:
+        benchmark_dir = eval_dir / spec.benchmark_id
+        try:
+            if spec.execution.startswith("native_"):
+                result = native_runner(
+                    spec,
+                    checkpoint=checkpoint,
+                    run_id=run_id,
+                    benchmark_dir=benchmark_dir,
+                    api_base=api_base,
+                    api_model=api_model,
+                    timeout=timeout,
+                    score_only=score_only,
+                    resume=resume,
+                    display_command=display_command,
+                )
+            else:
+                if score_only:
+                    raise ValueError(
+                        "--score-only is supported only for native specialty benchmarks in Phase 1."
+                    )
+                result = swift_runner(
+                    spec,
+                    checkpoint=checkpoint,
+                    run_id=run_id,
+                    benchmark_dir=benchmark_dir,
+                    infer_backend=infer_backend,
+                    eval_url=eval_url,
+                    resume=resume,
+                    swift_executable=swift_executable,
+                )
+            _validate_result_identity(
+                result,
+                spec,
+                checkpoint=checkpoint,
+                run_id=run_id,
+                benchmark_dir=benchmark_dir,
+            )
+        except Exception as exc:
+            result = _exception_result(
+                spec,
+                checkpoint=checkpoint,
+                run_id=run_id,
+                benchmark_dir=benchmark_dir,
+                display_command=display_command,
+                score_only=score_only,
+                error=exc,
+            )
+        results.append(result)
+
+    end_time = dt.datetime.now(dt.timezone.utc)
+    duration_seconds = (end_time - start_time).total_seconds()
+    metrics = _flat_metrics(results)
+    manifest = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "checkpoint": checkpoint,
+        "stage": stage,
+        "algorithm": algorithm,
+        "seed": seed,
+        "toolvista_commit": _toolvista_commit(),
+        "benchmarks": [spec.benchmark_id for spec in specs],
+        "benchmark_specs": [
+            {
+                "benchmark": spec.benchmark_id,
+                "source_project": spec.source_project,
+                "dataset": spec.dataset_name,
+                "split": spec.split,
+                "evaluator": spec.evaluator,
+                "sample_limit": spec.eval_limit,
+                "primary_metrics": list(spec.primary_metrics),
+                "metric_directions": dict(spec.metric_directions),
+            }
+            for spec in specs
+        ],
+        "inference": {
+            "api_base": _safe_endpoint(api_base),
+            "api_model": api_model,
+            "infer_backend": infer_backend,
+            "eval_url": _safe_endpoint(eval_url),
+            "chat_template": None,
+            "system_prompt": "from frozen manifest",
+            "temperature": 0,
+            "top_p": None,
+            "top_k": None,
+            "max_tokens": 512,
+            "image_preprocessing": "upstream default",
+            "tool_order": "frozen manifest order",
+            "stop_words": [],
+            "reasoning_visibility": "upstream default",
+        },
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat(),
+        "duration_seconds": duration_seconds,
+    }
+    summary = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "checkpoint": checkpoint,
+        "status": _suite_status(results),
+        "metrics": metrics,
+        "comparisons": calculate_comparisons(
+            metrics,
+            baseline_metrics=baseline_metrics,
+            historical_metrics=historical_metrics,
+            metric_directions=_metric_directions(specs),
+        ),
+        "benchmarks": {
+            result.benchmark: {
+                "status": result.status,
+                "attempted": result.attempted,
+                "completed": result.completed,
+                "failed": result.failed,
+                "result_path": result.test_summary.result_path,
+                "main_metrics": list(result.test_summary.main_metrics),
+                "artifacts": dict(result.artifacts),
+            }
+            for result in results
+        },
+        "runtime": {
+            "duration_seconds": duration_seconds,
+            "benchmark_duration_seconds": sum(
+                float(result.runtime.get("duration_seconds", 0.0)) for result in results
+            ),
+        },
+    }
+    write_json(run_dir / "manifest.json", manifest)
+    write_json(run_dir / "summary.json", summary)
+    return summary
+
+
+def upload_summary_to_wandb(
+    summary: Mapping[str, Any],
+    *,
+    project: str,
+    group: str | None,
+    wandb_module: Any = None,
+) -> str | None:
+    """Best-effort upload of final numeric suite metrics."""
+    run: Any = None
+    failure: Exception | None = None
+    try:
+        wandb = wandb_module or importlib.import_module("wandb")
+        run = wandb.init(
+            project=project,
+            group=group,
+            name=str(summary["run_id"]),
+            job_type="evaluation",
+        )
+        metrics = summary.get("metrics", {})
+        if not isinstance(metrics, Mapping):
+            raise ValueError("Evaluation summary metrics must be a mapping.")
+        run.log(
+            {
+                f"eval/{name}": float(value)
+                for name, value in metrics.items()
+                if isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and isfinite(float(value))
+            }
+        )
+    except Exception as exc:
+        failure = exc
+    finally:
+        if run is not None:
+            try:
+                run.finish()
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+    if failure is None:
+        return None
+    return f"W&B upload failed: {type(failure).__name__}: {failure}"

@@ -11,12 +11,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from toolvista.evaluation.io import load_json, load_jsonl, write_jsonl
-from toolvista.evaluation.models import BenchmarkSpec
+from toolvista.evaluation.models import BenchmarkSpec, EvaluationResult, TestSummary
 from toolvista.evaluation.runner import (
     build_swift_eval_command,
+    calculate_comparisons,
     call_chat_completion,
+    evaluate_suite,
     run_native_benchmark,
     run_swift_benchmark,
+    upload_summary_to_wandb,
 )
 
 
@@ -77,6 +80,42 @@ def swift_spec() -> BenchmarkSpec:
             "swift_datasets": ["RealWorldQA", "OCRBench"],
             "metric_scales": {"RealWorldQA/acc": 0.01},
         },
+    )
+
+
+def passed_result(
+    benchmark: str,
+    metric_name: str,
+    value: float,
+    benchmark_dir: Path,
+) -> EvaluationResult:
+    result_path = benchmark_dir / "result.json"
+    return EvaluationResult(
+        schema_version="1.0",
+        run_id="run",
+        checkpoint="checkpoint",
+        benchmark=benchmark,
+        profile="light",
+        prediction_mode="fresh",
+        test_summary=TestSummary(
+            method="test",
+            dataset="dataset / split",
+            source_project="source",
+            evaluator="evaluator",
+            sample_count=1,
+            command="command",
+            main_metrics=(metric_name,),
+            result_path=result_path.as_posix(),
+            artifact_paths={},
+        ),
+        status="passed",
+        attempted=1,
+        completed=1,
+        failed=0,
+        upstream_metrics={metric_name: value},
+        metrics={metric_name: value},
+        runtime={"duration_seconds": 1.0, "peak_gpu_memory_mb": None, "exit_code": 0},
+        artifacts={},
     )
 
 
@@ -1033,6 +1072,369 @@ class SwiftEvaluationRunnerTest(_TemporaryDirectoryTestCase):
         )
 
         self.assertEqual(resumed.to_dict(), first.to_dict())
+
+
+class EvaluationSummaryTest(_TemporaryDirectoryTestCase):
+    def test_comparisons_report_gain_retention_and_historical_forgetting(self) -> None:
+        comparisons = calculate_comparisons(
+            {"xlam/function_name_accuracy": 0.72},
+            baseline_metrics={"xlam/function_name_accuracy": 0.60},
+            historical_metrics=[
+                {"xlam/function_name_accuracy": 0.80},
+                {"xlam/function_name_accuracy": 0.75},
+            ],
+            metric_directions={"xlam/function_name_accuracy": "maximize"},
+        )
+
+        row = comparisons["xlam/function_name_accuracy"]
+        self.assertAlmostEqual(row["gain_vs_base"], 0.12)
+        self.assertAlmostEqual(row["retention"], 1.2)
+        self.assertAlmostEqual(row["historical_best"], 0.8)
+        self.assertAlmostEqual(row["forgetting"], 0.08)
+
+    def test_comparisons_are_direction_aware_for_minimized_metrics(self) -> None:
+        comparisons = calculate_comparisons(
+            {"latency_seconds": 3.0},
+            baseline_metrics={"latency_seconds": 5.0},
+            historical_metrics=[{"latency_seconds": 2.0}, {"latency_seconds": 4.0}],
+            metric_directions={"latency_seconds": "minimize"},
+        )
+
+        row = comparisons["latency_seconds"]
+        self.assertEqual(row["gain_vs_base"], 2.0)
+        self.assertEqual(row["retention"], 5.0 / 3.0)
+        self.assertEqual(row["historical_best"], 2.0)
+        self.assertEqual(row["forgetting"], 1.0)
+
+    def test_comparisons_omit_retention_for_zero_baseline(self) -> None:
+        comparisons = calculate_comparisons(
+            {"accuracy": 0.2},
+            baseline_metrics={"accuracy": 0.0},
+            historical_metrics=[],
+            metric_directions={"accuracy": "maximize"},
+        )
+
+        self.assertNotIn("retention", comparisons["accuracy"])
+
+    def test_comparisons_reject_nonfinite_inputs(self) -> None:
+        cases = [
+            ({"metric": float("nan")}, {}, []),
+            ({"metric": 1.0}, {"metric": float("inf")}, []),
+            ({"metric": 1.0}, {}, [{"metric": float("-inf")}]),
+        ]
+        for current, baseline, history in cases:
+            with self.subTest(current=current, baseline=baseline, history=history):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    calculate_comparisons(
+                        current,
+                        baseline_metrics=baseline,
+                        historical_metrics=history,
+                        metric_directions={"metric": "maximize"},
+                    )
+
+    def test_suite_is_sequential_and_continues_after_one_benchmark_raises(self) -> None:
+        order: list[str] = []
+        specs = [xlam_spec(Path("unused-xlam.jsonl")), mllm_router_spec(Path("unused-mllm.jsonl"))]
+
+        def fake_native(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            order.append(spec.benchmark_id)
+            if spec.benchmark_id == "xlam_function_calling":
+                raise RuntimeError("first failed")
+            return passed_result(
+                spec.benchmark_id,
+                "mllm_router/top1_accuracy",
+                0.75,
+                Path(kwargs["benchmark_dir"]),
+            )
+
+        root = self.make_temp_dir()
+        summary = evaluate_suite(
+            specs,
+            checkpoint="checkpoint",
+            run_id="run",
+            runs_root=root,
+            api_base="http://127.0.0.1:8000/v1",
+            api_model="checkpoint",
+            infer_backend="vllm",
+            eval_url=None,
+            timeout=10.0,
+            score_only=False,
+            resume=False,
+            display_command="python scripts/evaluate.py",
+            stage="c3",
+            algorithm=None,
+            seed=42,
+            baseline_metrics={},
+            historical_metrics=[],
+            native_runner=fake_native,
+        )
+
+        self.assertEqual(order, ["xlam_function_calling", "mllm_router"])
+        self.assertEqual(summary["status"], "failed")
+        failed = summary["benchmarks"]["xlam_function_calling"]
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["attempted"], 0)
+        self.assertEqual(failed["completed"], 0)
+        self.assertEqual(failed["failed"], 0)
+        result = load_json(failed["result_path"])
+        self.assertEqual(result["runtime"]["exit_code"], 1)
+        self.assertIn(
+            "RuntimeError: first failed",
+            Path(result["artifacts"]["stderr"]).read_text(encoding="utf-8"),
+        )
+        self.assertEqual(summary["benchmarks"]["mllm_router"]["status"], "passed")
+        self.assertTrue((root / "run/manifest.json").is_file())
+        self.assertTrue((root / "run/summary.json").is_file())
+
+    def test_suite_rejects_resumed_result_from_another_checkpoint(self) -> None:
+        root = self.make_temp_dir()
+
+        def stale_runner(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            return passed_result(
+                spec.benchmark_id,
+                "xlam/function_name_accuracy",
+                0.75,
+                Path(kwargs["benchmark_dir"]),
+            )
+
+        summary = evaluate_suite(
+            [xlam_spec(Path("unused.jsonl"))],
+            checkpoint="checkpoint-B",
+            run_id="run",
+            runs_root=root,
+            api_base=None,
+            api_model=None,
+            infer_backend="vllm",
+            eval_url=None,
+            timeout=10.0,
+            score_only=False,
+            resume=True,
+            display_command="python scripts/evaluate.py --resume",
+            stage=None,
+            algorithm=None,
+            seed=42,
+            baseline_metrics={},
+            historical_metrics=[],
+            native_runner=stale_runner,
+        )
+
+        self.assertEqual(summary["checkpoint"], "checkpoint-B")
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["metrics"], {})
+        result = load_json(summary["benchmarks"]["xlam_function_calling"]["result_path"])
+        self.assertEqual(result["checkpoint"], "checkpoint-B")
+        self.assertIn(
+            "checkpoint='checkpoint', expected 'checkpoint-B'",
+            Path(result["artifacts"]["stderr"]).read_text(encoding="utf-8"),
+        )
+
+    def test_suite_rejects_empty_benchmark_list(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least one benchmark"):
+            evaluate_suite(
+                [], checkpoint="checkpoint", run_id="run", runs_root=self.make_temp_dir(),
+                api_base=None, api_model=None, infer_backend="vllm", eval_url=None,
+                timeout=10.0, score_only=False, resume=False,
+                display_command="python scripts/evaluate.py", stage=None, algorithm=None, seed=42,
+                baseline_metrics={}, historical_metrics=[],
+            )
+
+    def test_suite_rejects_duplicate_metric_names_across_benchmarks(self) -> None:
+        duplicate = BenchmarkSpec.from_mapping(
+            "duplicate_metric",
+            {
+                "execution": "native_mllm_router", "profile": "light", "method": "native",
+                "source_project": "source", "dataset_name": "dataset", "split": "dev",
+                "evaluator": "scorer", "dataset_path": "unused.jsonl",
+                "primary_metrics": ["xlam/function_name_accuracy"],
+                "metric_directions": {"xlam/function_name_accuracy": "maximize"},
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate metric"):
+            evaluate_suite(
+                [xlam_spec(Path("unused.jsonl")), duplicate], checkpoint="checkpoint",
+                run_id="run", runs_root=self.make_temp_dir(), api_base=None, api_model=None,
+                infer_backend="vllm", eval_url=None, timeout=10.0, score_only=False,
+                resume=False, display_command="python scripts/evaluate.py", stage=None,
+                algorithm=None, seed=42, baseline_metrics={}, historical_metrics=[],
+            )
+
+    def test_suite_rejects_runtime_metric_collisions(self) -> None:
+        specs = [xlam_spec(Path("unused-xlam.jsonl")), mllm_router_spec(Path("unused-mllm.jsonl"))]
+
+        def fake_native(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            result = passed_result(
+                spec.benchmark_id,
+                spec.primary_metrics[0],
+                0.75,
+                Path(kwargs["benchmark_dir"]),
+            )
+            result.metrics["unexpected/shared_metric"] = 0.5
+            result.upstream_metrics["unexpected/shared_metric"] = 0.5
+            return result
+
+        with self.assertRaisesRegex(ValueError, "duplicate metric"):
+            evaluate_suite(
+                specs, checkpoint="checkpoint", run_id="run", runs_root=self.make_temp_dir(),
+                api_base=None, api_model=None, infer_backend="vllm", eval_url=None,
+                timeout=10.0, score_only=False, resume=False,
+                display_command="python scripts/evaluate.py", stage=None, algorithm=None, seed=42,
+                baseline_metrics={}, historical_metrics=[], native_runner=fake_native,
+            )
+
+    def test_interrupted_suite_rerun_invalidates_previous_summary(self) -> None:
+        root = self.make_temp_dir()
+        benchmark_dir = root / "run/eval/xlam_function_calling"
+
+        def passing_runner(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            return passed_result(
+                spec.benchmark_id, "xlam/function_name_accuracy", 0.75,
+                Path(kwargs["benchmark_dir"]),
+            )
+
+        common = {
+            "checkpoint": "checkpoint", "run_id": "run", "runs_root": root,
+            "api_base": None, "api_model": None, "infer_backend": "vllm", "eval_url": None,
+            "timeout": 10.0, "score_only": False, "resume": False,
+            "display_command": "python scripts/evaluate.py", "stage": None,
+            "algorithm": None, "seed": 42, "baseline_metrics": {}, "historical_metrics": [],
+        }
+        evaluate_suite([xlam_spec(Path("unused.jsonl"))], native_runner=passing_runner, **common)
+        self.assertTrue((root / "run/manifest.json").is_file())
+        self.assertTrue((root / "run/summary.json").is_file())
+        benchmark_dir.mkdir(parents=True, exist_ok=True)
+        (benchmark_dir / "result.json").write_text(
+            json.dumps(
+                passed_result(
+                    "xlam_function_calling",
+                    "xlam/function_name_accuracy",
+                    0.75,
+                    benchmark_dir,
+                ).to_dict()
+            ),
+            encoding="utf-8",
+        )
+
+        def interrupted_runner(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            raise KeyboardInterrupt()
+
+        with self.assertRaises(KeyboardInterrupt):
+            evaluate_suite(
+                [xlam_spec(Path("unused.jsonl"))], native_runner=interrupted_runner, **common
+            )
+
+        self.assertFalse((root / "run/manifest.json").exists())
+        self.assertFalse((root / "run/summary.json").exists())
+        self.assertFalse((benchmark_dir / "result.json").exists())
+
+        reran = False
+
+        def resume_aware_runner(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            nonlocal reran
+            result_path = Path(kwargs["benchmark_dir"]) / "result.json"
+            if kwargs["resume"] and result_path.is_file():
+                return EvaluationResult.from_dict(load_json(result_path))
+            reran = True
+            return passed_result(
+                spec.benchmark_id,
+                "xlam/function_name_accuracy",
+                0.80,
+                Path(kwargs["benchmark_dir"]),
+            )
+
+        resumed = evaluate_suite(
+            [xlam_spec(Path("unused.jsonl"))],
+            native_runner=resume_aware_runner,
+            **{**common, "resume": True},
+        )
+        self.assertTrue(reran)
+        self.assertEqual(resumed["status"], "passed")
+        self.assertEqual(resumed["metrics"]["xlam/function_name_accuracy"], 0.80)
+
+    def test_manifest_omits_api_credentials(self) -> None:
+        def fake_native(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            return passed_result(
+                spec.benchmark_id, "xlam/function_name_accuracy", 0.75,
+                Path(kwargs["benchmark_dir"]),
+            )
+
+        root = self.make_temp_dir()
+        evaluate_suite(
+            [xlam_spec(Path("unused.jsonl"))], checkpoint="checkpoint", run_id="run",
+            runs_root=root, api_base="https://secret-token@example.test/v1?api_key=secret",
+            api_model="checkpoint", infer_backend="vllm",
+            eval_url="https://eval-secret@example.test", timeout=10.0, score_only=False,
+            resume=False, display_command="python scripts/evaluate.py --api-key secret",
+            stage="c1", algorithm=None, seed=42, baseline_metrics={}, historical_metrics=[],
+            native_runner=fake_native,
+        )
+        serialized = json.dumps(load_json(root / "run/manifest.json"))
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("api_key", serialized)
+        self.assertNotIn("eval-secret", serialized)
+
+    def test_wandb_upload_flattens_numeric_metrics_and_warning_is_nonfatal(self) -> None:
+        class FakeRun:
+            def __init__(self) -> None:
+                self.logged: dict[str, float] | None = None
+                self.finished = False
+
+            def log(self, values: dict[str, float]) -> None:
+                self.logged = values
+
+            def finish(self) -> None:
+                self.finished = True
+
+        class FakeWandb:
+            def __init__(self) -> None:
+                self.run = FakeRun()
+
+            def init(self, **kwargs: object) -> FakeRun:
+                return self.run
+
+        fake = FakeWandb()
+        warning = upload_summary_to_wandb(
+            {"run_id": "run", "metrics": {"xlam/acc": 0.75}, "status": "passed"},
+            project="toolvista-qwen3vl", group="c3-mllm-router-sft", wandb_module=fake,
+        )
+        self.assertIsNone(warning)
+        self.assertEqual(fake.run.logged, {"eval/xlam/acc": 0.75})
+        self.assertTrue(fake.run.finished)
+
+        class BrokenWandb:
+            def init(self, **kwargs: object) -> object:
+                raise RuntimeError("offline")
+
+        warning = upload_summary_to_wandb(
+            {"run_id": "run", "metrics": {}}, project="toolvista-qwen3vl",
+            group=None, wandb_module=BrokenWandb(),
+        )
+        self.assertIn("offline", warning)
+
+    def test_wandb_finishes_run_when_log_fails(self) -> None:
+        class FailingRun:
+            def __init__(self) -> None:
+                self.finished = False
+
+            def log(self, values: dict[str, float]) -> None:
+                raise RuntimeError("log failed")
+
+            def finish(self) -> None:
+                self.finished = True
+
+        class FakeWandb:
+            def __init__(self) -> None:
+                self.run = FailingRun()
+
+            def init(self, **kwargs: object) -> FailingRun:
+                return self.run
+
+        fake = FakeWandb()
+        warning = upload_summary_to_wandb(
+            {"run_id": "run", "metrics": {"xlam/acc": 0.75}},
+            project="toolvista-qwen3vl", group=None, wandb_module=fake,
+        )
+        self.assertIn("log failed", warning)
+        self.assertTrue(fake.run.finished)
 
 
 class ChatCompletionClientTest(unittest.TestCase):
