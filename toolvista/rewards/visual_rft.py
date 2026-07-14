@@ -1,4 +1,4 @@
-"""Minimal ms-swift reward plugin for Visual-RFT grounding tasks."""
+"""Minimal ms-swift reward plugin for Visual-RFT answer and grounding tasks."""
 
 from __future__ import annotations
 
@@ -12,7 +12,32 @@ from swift.rewards import ORM, orms
 
 
 GROUNDING_TASKS = {"grounding", "detection", "object_detection", "gui_grounding"}
+ANSWER_TASKS = {"classification", "vqa", "visual_question_answering", "question_answering", "counting"}
 ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+
+
+class VisualRFTORM(ORM):
+    """Route each Visual-RFT row to its upstream-style task reward."""
+
+    def __call__(
+        self,
+        completions: Sequence[str],
+        solution: Sequence[str],
+        task: Optional[Sequence[str]] = None,
+        **kwargs: Any,
+    ) -> List[Optional[float]]:
+        tasks = task or ["vqa"] * len(completions)
+        _validate_batch_lengths(completions, solution, tasks)
+        rewards: List[Optional[float]] = []
+        for completion, gold, name in zip(completions, solution, tasks):
+            normalized_task = _normalize_task(name)
+            if normalized_task in GROUNDING_TASKS:
+                rewards.append(_score_boxes(completion, gold))
+            elif normalized_task in ANSWER_TASKS:
+                rewards.append(_score_answer(completion, gold))
+            else:
+                rewards.append(None)
+        return rewards
 
 
 class VisualRFTIoUORM(ORM):
@@ -26,17 +51,37 @@ class VisualRFTIoUORM(ORM):
         **kwargs: Any,
     ) -> List[Optional[float]]:
         tasks = task or ["grounding"] * len(completions)
-        lengths = {
-            "completions": len(completions),
-            "solution": len(solution),
-            "task": len(tasks),
-        }
-        if len(set(lengths.values())) != 1:
-            raise ValueError(f"Visual-RFT reward batch length mismatch: {lengths}.")
+        _validate_batch_lengths(completions, solution, tasks)
         return [
             None if _normalize_task(name) not in GROUNDING_TASKS else _score_boxes(completion, gold)
             for completion, gold, name in zip(completions, solution, tasks)
         ]
+
+
+def _validate_batch_lengths(*columns: Sequence[Any]) -> None:
+    names = ("completions", "solution", "task")
+    lengths = {name: len(column) for name, column in zip(names, columns)}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"Visual-RFT reward batch length mismatch: {lengths}.")
+
+
+def _score_answer(completion: Any, solution: Any) -> float:
+    student = _normalize_answer(_extract_answer(completion))
+    expected = _normalize_answer(_extract_answer(solution))
+    if not student or not expected:
+        return 0.0
+    return 1.0 if expected in student or student in expected else 0.0
+
+
+def _extract_answer(text: Any) -> str:
+    if not isinstance(text, str):
+        return ""
+    match = ANSWER_PATTERN.search(text)
+    return match.group(1).strip() if match else text.strip()
+
+
+def _normalize_answer(text: str) -> str:
+    return re.sub(r"\s+", "", text).replace("_", "").lower()
 
 
 def _score_boxes(completion: str, solution: str) -> float:
@@ -158,4 +203,5 @@ def _normalize_task(value: Any) -> str:
     return str(value).strip().lower().replace("-", "_").replace(" ", "_")
 
 
+orms["visual_rft"] = VisualRFTORM
 orms["visual_rft_iou"] = VisualRFTIoUORM

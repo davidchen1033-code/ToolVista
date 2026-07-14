@@ -5,6 +5,11 @@ __pycache__/
 # Local datasets and generated conversion outputs
 data/exports/
 data/reports/
+data/materialized_images/
+runs/
+
+# Machine-specific path configuration
+configs/local.windows.yaml
 
 # Test temporary directories
 tests/tmp*/

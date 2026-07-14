@@ -38,11 +38,49 @@ def answer(boxes) -> str:
 
 
 class VisualRFTRewardPluginTest(unittest.TestCase):
-    def test_import_registers_one_ms_swift_orm(self) -> None:
+    def test_import_registers_routed_and_legacy_ms_swift_orms(self) -> None:
         module, registry = load_plugin()
 
-        self.assertEqual(registry, {"visual_rft_iou": module.VisualRFTIoUORM})
+        self.assertEqual(
+            registry,
+            {
+                "visual_rft": module.VisualRFTORM,
+                "visual_rft_iou": module.VisualRFTIoUORM,
+            },
+        )
+        self.assertTrue(issubclass(module.VisualRFTORM, StubORM))
         self.assertTrue(issubclass(module.VisualRFTIoUORM, StubORM))
+
+    def test_routed_reward_scores_visual_rft_classification_like_upstream(self) -> None:
+        _, registry = load_plugin()
+        orm = registry["visual_rft"]()
+
+        rewards = orm(
+            [
+                "<think>shape</think><answer>FGVC Aircraft</answer>",
+                "<think>shape</think><answer>automobile</answer>",
+            ],
+            [
+                "<think>gold</think><answer>fgvc_aircraft</answer>",
+                "<think>gold</think><answer>aircraft</answer>",
+            ],
+            task=["classification", "classification"],
+        )
+
+        self.assertEqual(rewards, [1.0, 0.0])
+
+    def test_routed_reward_dispatches_grounding_and_ignores_unknown_tasks(self) -> None:
+        _, registry = load_plugin()
+        orm = registry["visual_rft"]()
+        boxes = [{"Position": [10, 20, 30, 40], "Confidence": 0.9}]
+
+        rewards = orm(
+            [answer(boxes), "<answer>anything</answer>"],
+            [answer(boxes), "<answer>anything</answer>"],
+            task=["grounding", "unsupported_task"],
+        )
+
+        self.assertEqual(rewards, [1.0, None])
 
     def test_perfect_box_receives_full_reward(self) -> None:
         _, registry = load_plugin()

@@ -76,7 +76,7 @@ C3: 60% MLLM-Tool + 20% ToolVQA + 20% xLAM
 四个分支全部从同一个 `C3_CHECKPOINT` 开始，并共享：
 
 - Visual-RFT GRPO JSONL；
-- `toolvista/rewards/visual_rft.py` 外部 reward 插件；
+- `toolvista/rewards/visual_rft.py` 外部 reward 插件与 ms-swift 内置 format reward；
 - seed、学习率、batch、生成数量、最大长度和训练步数；
 - LoRA、视觉冻结、vLLM colocate 和 W&B 设置。
 
@@ -95,7 +95,7 @@ swift rlhf --rlhf_type grpo
 | DrGRPO | `--loss_type dr_grpo --scale_rewards none` |
 | DAPO | `--loss_type dapo --epsilon_high 0.28 --dynamic_sample true --max_resample_times 3 --overlong_filter true` |
 
-DAPO 不默认追加 `soft_overlong` reward，因为当前 Visual-RFT 实验首先要保证四个分支共享相同 reward。需要研究完整 DAPO tricks 时，可通过额外参数显式加入，作为另一个实验而不是混入本次 A/B。
+DAPO 不默认追加 `soft_overlong` reward，因为当前 Visual-RFT 实验首先要保证四个分支共享相同 reward。插件按 task 将 classification/VQA 路由到上游式答案匹配、将 grounding/detection 路由到 IoU，格式分数直接复用 ms-swift 内置 reward。需要研究完整 DAPO tricks 时，可通过额外参数显式加入，作为另一个实验而不是混入本次 A/B。
 
 四个分支输出到独立目录：
 
