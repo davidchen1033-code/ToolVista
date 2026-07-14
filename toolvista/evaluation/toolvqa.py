@@ -242,15 +242,27 @@ def map_metrics(
     return metrics
 
 
-def _latest_official_result(upstream_root: Path) -> Path:
-    matches = [
+def _official_results(upstream_root: Path) -> list[Path]:
+    return [
         path
         for path in upstream_root.rglob("gta_bench.json")
         if path.parent.name == MODEL_ABBR and path.parent.parent.name == "results"
     ]
+
+
+def _latest_official_result(
+    upstream_root: Path,
+    previous_versions: Mapping[Path, int],
+) -> Path:
+    matches = [
+        path
+        for path in _official_results(upstream_root)
+        if previous_versions.get(path.resolve()) != path.stat().st_mtime_ns
+    ]
     if not matches:
         raise FileNotFoundError(
-            f"Official ToolVQA gta_bench.json not found under {upstream_root}"
+            "Official ToolVQA gta_bench.json was not created or updated by the "
+            f"current run under {upstream_root}"
         )
     return max(matches, key=lambda path: path.stat().st_mtime_ns)
 
@@ -315,6 +327,10 @@ def run_toolvqa(
     )
 
     upstream_root = output_dir / "upstream"
+    previous_results = {
+        path.resolve(): path.stat().st_mtime_ns
+        for path in _official_results(upstream_root)
+    }
     command = [
         python_executable,
         str(run_py),
@@ -358,7 +374,7 @@ def run_toolvqa(
             f"see {output_dir / 'stderr.log'}"
         )
 
-    official_result = _latest_official_result(upstream_root)
+    official_result = _latest_official_result(upstream_root, previous_results)
     upstream_metrics = load_json(official_result)
     metrics = map_metrics(upstream_metrics, mode)
     result = {

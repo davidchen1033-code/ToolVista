@@ -210,6 +210,54 @@ class ToolVQAEvaluationTest(unittest.TestCase):
         self.assertTrue((output / "runtime_config.py").is_file())
         self.assertTrue((output / "result.json").is_file())
 
+    def test_run_toolvqa_rejects_stale_official_result(self) -> None:
+        root = self.make_temp_dir()
+        toolvqa_root = root / "ToolVQA-release"
+        opencompass = toolvqa_root / "opencompass"
+        opencompass.mkdir(parents=True)
+        (opencompass / "run.py").write_text("# fake", encoding="utf-8")
+        upstream_meta = opencompass / "data" / "ToolVQA"
+        upstream_meta.mkdir(parents=True)
+        (upstream_meta / "toolmeta.json").write_text("{}", encoding="utf-8")
+        output = root / "run"
+        stale = (
+            output
+            / "upstream"
+            / "20260713_120000"
+            / "results"
+            / "toolvista_qwen3vl"
+            / "gta_bench.json"
+        )
+        stale.parent.mkdir(parents=True)
+        stale.write_text(
+            json.dumps(
+                {
+                    "inst_align": 1.0,
+                    "tool_acc": 1.0,
+                    "arg_acc": 1.0,
+                    "answer_acc": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def fake_runner(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with self.assertRaisesRegex(FileNotFoundError, "current run"):
+            run_toolvqa(
+                mode="step",
+                toolvqa_root=toolvqa_root,
+                data_root=FIXTURE_ROOT,
+                output_dir=output,
+                api_base="http://127.0.0.1:8000",
+                api_model="qwen3-vl",
+                python_executable="python",
+                workers=1,
+                limit=1,
+                command_runner=fake_runner,
+            )
+
     def test_cli_requires_tool_url_only_for_e2e(self) -> None:
         common = [
             "--toolvqa-root",
