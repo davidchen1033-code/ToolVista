@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import unittest
 import uuid
 from pathlib import Path
 
 from toolvista.evaluation.toolvqa import (
+    map_metrics,
     normalize_api_base,
     prepare_data,
     render_runtime_config,
     resolve_toolmeta,
+    run_toolvqa,
 )
 
 
@@ -109,6 +112,100 @@ class ToolVQAEvaluationTest(unittest.TestCase):
             resolve_toolmeta(data_root, root / "ToolVQA-release"),
             expected.resolve(),
         )
+
+    def test_map_metrics_uses_only_official_mode_fields(self) -> None:
+        step = map_metrics(
+            {
+                "inst_align": 80.0,
+                "tool_acc": 70.0,
+                "arg_acc": 60.0,
+                "answer_acc": 50.0,
+            },
+            "step",
+        )
+        self.assertEqual(step["toolvqa_sbs/tool_accuracy"], 70.0)
+
+        e2e = map_metrics(
+            {
+                "answer_acc": 40.0,
+                "p_f1": 30.0,
+                "o_f1": 20.0,
+                "l_f1": 10.0,
+                "c_f1": 5.0,
+            },
+            "e2e",
+        )
+        self.assertEqual(e2e["toolvqa_e2e/creativity_f1"], 5.0)
+        with self.assertRaisesRegex(ValueError, "tool_acc"):
+            map_metrics({"inst_align": 1.0}, "step")
+
+    def test_run_toolvqa_preserves_logs_and_parses_official_json(self) -> None:
+        root = self.make_temp_dir()
+        toolvqa_root = root / "ToolVQA-release"
+        opencompass = toolvqa_root / "opencompass"
+        opencompass.mkdir(parents=True)
+        (opencompass / "run.py").write_text("# fake", encoding="utf-8")
+        upstream_meta = opencompass / "data" / "ToolVQA"
+        upstream_meta.mkdir(parents=True)
+        (upstream_meta / "toolmeta.json").write_text("{}", encoding="utf-8")
+        output = root / "run"
+        captured: dict[str, object] = {}
+
+        def fake_runner(command, **kwargs):
+            captured["command"] = command
+            captured["cwd"] = kwargs["cwd"]
+            result_path = (
+                output
+                / "upstream"
+                / "20260714_120000"
+                / "results"
+                / "toolvista_qwen3vl"
+                / "gta_bench.json"
+            )
+            result_path.parent.mkdir(parents=True)
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "inst_align": 80.0,
+                        "tool_acc": 70.0,
+                        "arg_acc": 60.0,
+                        "answer_acc": 50.0,
+                        "tool_call": 3,
+                        "tool_call_error": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="official stdout",
+                stderr="",
+            )
+
+        result = run_toolvqa(
+            mode="step",
+            toolvqa_root=toolvqa_root,
+            data_root=FIXTURE_ROOT,
+            output_dir=output,
+            api_base="http://127.0.0.1:8000",
+            api_model="qwen3-vl",
+            python_executable="python",
+            workers=1,
+            limit=1,
+            command_runner=fake_runner,
+        )
+
+        self.assertEqual(captured["cwd"], str(opencompass.resolve()))
+        self.assertIn("--eval_mode", captured["command"])
+        self.assertEqual(result["metrics"]["toolvqa_sbs/tool_accuracy"], 70.0)
+        self.assertFalse(result["comparable"])
+        self.assertEqual(
+            (output / "stdout.log").read_text(encoding="utf-8"),
+            "official stdout",
+        )
+        self.assertTrue((output / "runtime_config.py").is_file())
+        self.assertTrue((output / "result.json").is_file())
 
 
 if __name__ == "__main__":

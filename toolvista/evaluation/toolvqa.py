@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import copy
+import os
+import shlex
+import subprocess
+import sys
+from math import isfinite
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from toolvista.evaluation.io import load_json, write_json
@@ -12,6 +17,19 @@ from toolvista.evaluation.io import load_json, write_json
 
 ToolVQAMode = Literal["step", "e2e"]
 MODEL_ABBR = "toolvista_qwen3vl"
+STEP_METRICS = {
+    "inst_align": "toolvqa_sbs/inst_align",
+    "tool_acc": "toolvqa_sbs/tool_accuracy",
+    "arg_acc": "toolvqa_sbs/argument_accuracy",
+    "answer_acc": "toolvqa_sbs/answer_accuracy",
+}
+E2E_METRICS = {
+    "answer_acc": "toolvqa_e2e/answer_accuracy",
+    "p_f1": "toolvqa_e2e/perception_f1",
+    "o_f1": "toolvqa_e2e/operation_f1",
+    "l_f1": "toolvqa_e2e/logic_f1",
+    "c_f1": "toolvqa_e2e/creativity_f1",
+}
 
 
 def normalize_api_base(value: str) -> str:
@@ -199,3 +217,163 @@ infer = dict(
     runner=dict(type=LocalRunner, task=dict(type=OpenICLInferTask)),
 )
 '''
+
+
+def map_metrics(
+    upstream: Mapping[str, Any],
+    mode: ToolVQAMode,
+) -> dict[str, float]:
+    """Map official ToolVQA metrics without changing their values."""
+    if mode not in {"step", "e2e"}:
+        raise ValueError(f"Unsupported ToolVQA mode: {mode!r}")
+    mapping = STEP_METRICS if mode == "step" else E2E_METRICS
+    metrics: dict[str, float] = {}
+    for source, target in mapping.items():
+        value = upstream.get(source)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not isfinite(float(value))
+        ):
+            raise ValueError(
+                f"Official ToolVQA result requires finite metric {source!r}."
+            )
+        metrics[target] = float(value)
+    return metrics
+
+
+def _latest_official_result(upstream_root: Path) -> Path:
+    matches = [
+        path
+        for path in upstream_root.rglob("gta_bench.json")
+        if path.parent.name == MODEL_ABBR and path.parent.parent.name == "results"
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            f"Official ToolVQA gta_bench.json not found under {upstream_root}"
+        )
+    return max(matches, key=lambda path: path.stat().st_mtime_ns)
+
+
+def run_toolvqa(
+    *,
+    mode: ToolVQAMode,
+    toolvqa_root: Path,
+    data_root: Path,
+    output_dir: Path,
+    api_base: str,
+    api_model: str,
+    tool_url: str | None = None,
+    media_root: Path | None = None,
+    python_executable: str = sys.executable,
+    workers: int = 1,
+    limit: int | None = None,
+    command_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, Any]:
+    """Run ToolVQA's upstream OpenCompass CLI and parse its official JSON."""
+    if mode not in {"step", "e2e"}:
+        raise ValueError(f"Unsupported ToolVQA mode: {mode!r}")
+    if workers <= 0:
+        raise ValueError("ToolVQA workers must be positive.")
+    if limit is not None and limit <= 0:
+        raise ValueError("ToolVQA limit must be positive.")
+
+    toolvqa_root = toolvqa_root.resolve()
+    data_root = data_root.resolve()
+    output_dir = output_dir.resolve()
+    opencompass_root = toolvqa_root / "opencompass"
+    run_py = opencompass_root / "run.py"
+    if not run_py.is_file():
+        raise FileNotFoundError(
+            f"ToolVQA OpenCompass entry point does not exist: {run_py}"
+        )
+    if not (data_root / "dataset.json").is_file():
+        raise FileNotFoundError(
+            f"ToolVQA dataset.json does not exist: {data_root / 'dataset.json'}"
+        )
+
+    toolmeta = resolve_toolmeta(data_root, toolvqa_root)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prepared_dataset, is_fixture, sample_count = prepare_data(
+        data_root,
+        output_dir / "data",
+        media_root=media_root.resolve() if media_root is not None else None,
+    )
+    runtime_config = output_dir / "runtime_config.py"
+    runtime_config.write_text(
+        render_runtime_config(
+            mode=mode,
+            data_root=prepared_dataset.parent,
+            toolmeta=toolmeta,
+            api_base=api_base,
+            api_model=api_model,
+            tool_url=tool_url,
+            limit=limit,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    upstream_root = output_dir / "upstream"
+    command = [
+        python_executable,
+        str(run_py),
+        str(runtime_config),
+        "--work-dir",
+        str(upstream_root),
+        "--eval_mode",
+        MODEL_ABBR,
+        "--max-num-workers",
+        str(workers),
+        "--debug",
+    ]
+    try:
+        completed = command_runner(
+            command,
+            cwd=str(opencompass_root),
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        (output_dir / "stdout.log").write_text("", encoding="utf-8")
+        (output_dir / "stderr.log").write_text(
+            f"{type(exc).__name__}: {exc}\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError(f"Unable to start ToolVQA OpenCompass: {exc}") from exc
+
+    (output_dir / "stdout.log").write_text(
+        completed.stdout or "",
+        encoding="utf-8",
+    )
+    (output_dir / "stderr.log").write_text(
+        completed.stderr or "",
+        encoding="utf-8",
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"ToolVQA OpenCompass failed with exit code {completed.returncode}; "
+            f"see {output_dir / 'stderr.log'}"
+        )
+
+    official_result = _latest_official_result(upstream_root)
+    upstream_metrics = load_json(official_result)
+    metrics = map_metrics(upstream_metrics, mode)
+    result = {
+        "mode": mode,
+        "dataset_kind": "train_fixture" if is_fixture else "official_test",
+        "comparable": not is_fixture,
+        "warning": "Not an official ToolVQA test score." if is_fixture else None,
+        "sample_count": (
+            min(sample_count, limit) if limit is not None else sample_count
+        ),
+        "upstream_result": official_result.as_posix(),
+        "upstream_metrics": upstream_metrics,
+        "metrics": metrics,
+        "command": shlex.join(command),
+        "exit_code": completed.returncode,
+    }
+    write_json(output_dir / "result.json", result)
+    return result
