@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import shutil
 import subprocess
@@ -7,6 +9,7 @@ import unittest
 import uuid
 from pathlib import Path
 
+from scripts.evaluate_toolvqa import parse_args
 from toolvista.evaluation.toolvqa import (
     map_metrics,
     normalize_api_base,
@@ -206,6 +209,38 @@ class ToolVQAEvaluationTest(unittest.TestCase):
         )
         self.assertTrue((output / "runtime_config.py").is_file())
         self.assertTrue((output / "result.json").is_file())
+
+    def test_cli_requires_tool_url_only_for_e2e(self) -> None:
+        common = [
+            "--toolvqa-root",
+            "F:/code/ToolVQA-release",
+            "--data-root",
+            "F:/data/ToolVQA",
+            "--api-base",
+            "http://127.0.0.1:8000/v1",
+            "--api-model",
+            "qwen3-vl",
+            "--output-dir",
+            "runs/toolvqa",
+        ]
+
+        step = parse_args(["--mode", "step", *common, "--limit", "10"])
+        self.assertEqual(step.mode, "step")
+        self.assertEqual(step.limit, 10)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args(["--mode", "e2e", *common])
+
+        e2e = parse_args(
+            [
+                "--mode",
+                "e2e",
+                *common,
+                "--tool-url",
+                "http://127.0.0.1:16181",
+            ]
+        )
+        self.assertEqual(e2e.tool_url, "http://127.0.0.1:16181")
 
 
 if __name__ == "__main__":
