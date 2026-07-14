@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "input_modality": "text",
+    "output_modality": "text",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "Select a text embedding model for this sentence.",
+        "input_modality": "text"
+      },
+      {
+        "from": "gpt",
+        "value": "sentence-transformers/all-MiniLM-L6-v2",
+        "ambiguity": -1,
+        "output_modality": "text"
+      }
+    ]
+  }
+]

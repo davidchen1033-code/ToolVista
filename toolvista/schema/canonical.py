@@ -3,9 +3,9 @@
 Adapters convert raw datasets into these structures. Exporters then convert
 them into Qwen official sanity data, ms-swift SFT/DPO JSONL, or verl-agent
 rollout inputs.
-"""
-"""
+
 定义了 ToolVista 的内部标准样本结构，包括：
+ContentPart
 CanonicalMessage
 MediaBundle
 ToolSpec
@@ -23,7 +23,7 @@ raw dataset
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -40,7 +40,32 @@ TaskType = Literal[
     "grounding",
 ]
 
+
 # dataclass 会自动帮你生成 __init__、__repr__、__eq__ 等方法。也就是说你不用手写构造函数。
+@dataclass
+class ContentPart:
+    """
+    表示一条消息内部的结构化文本或媒体片段。
+    A structured text or media part inside one canonical message.
+
+    文本片段通常填写 text；图片、视频、音频片段通常填写 media_ref，
+    例如 images[0]、videos[0]、audios[0]。
+    """
+
+    type: Modality # 当前片段的类型，只能是 text / image / video / audio
+    text: Optional[str] = None # 文本片段的具体内容；媒体片段通常不填写
+    media_ref: Optional[str] = None # 指向 MediaBundle 中媒体的位置，例如 images[0]
+
+    # 把当前结构化片段转换成字典，同时省略没有填写的可选字段。
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {"type": self.type}
+        if self.text is not None:
+            data["text"] = self.text
+        if self.media_ref is not None:
+            data["media_ref"] = self.media_ref
+        return data
+
+
 @dataclass
 class CanonicalMessage:
     """
@@ -56,21 +81,32 @@ class CanonicalMessage:
 
     role: MessageRole # 上面定义的MessageRole角色，包括："system","user","assistant","tool_call","tool_response","tool"
     content: str
+    content_parts: List[ContentPart] = field(default_factory=list) # 保存文本与媒体在消息中的结构化顺序，供 exporter 生成 <image> 等占位符
     loss: Optional[bool] = None # loss 通常用来控制这一条消息是否参与 loss 计算
-    loss_scale: Optional[float] = None # loss 的权重缩放，比如 0.5 表示这条消息的 loss 权重可能乘以 0.5
+    loss_scale: Optional[float] = None # loss 的权重缩放，比如 0.5 表示这一条消息的 loss 权重可能乘以 0.5
 
     # 作用是把当前 CanonicalMessage 对象转换成字典。
     def to_dict(self) -> Dict[str, Any]:
-        data = asdict(self)
-        return {key: value for key, value in data.items() if value is not None}
+        data: Dict[str, Any] = {
+            "role": self.role,
+            "content": self.content,
+        }
+        if self.content_parts:
+            data["content_parts"] = [part.to_dict() for part in self.content_parts]
+        if self.loss is not None:
+            data["loss"] = self.loss
+        if self.loss_scale is not None:
+            data["loss_scale"] = self.loss_scale
+        return data
 
 
 @dataclass
 class MediaBundle:
     """
     表示消息里引用的图片、视频、音频路径
-    Media paths referenced by standard placeholders in messages.
+    Media paths referenced by canonical content parts.
     """
+
     # default_factory=list 会确保每次创建对象时都生成一个新的空列表
     # field是 dataclasses 模块提供的一个函数，主要用于给 @dataclass 里的字段提供更精细的配置，给 dataclass 字段设置默认值、默认工厂、显示规则、比较规则等配置。
     images: List[str] = field(default_factory=list)
@@ -202,7 +238,7 @@ class AdaptResult:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     raw_ref: Dict[str, Any] = field(default_factory=dict) # 原始样本引用信息，它通常不是完整原始数据，而是能帮助定位原始数据的引用
-    
+
     # 定义一个属性 ok，表示这次转换是否成功
     @property
     def ok(self) -> bool:

@@ -1,0 +1,60 @@
+benchmarks:
+  xlam_function_calling:
+    execution: native_xlam
+    profile: light
+    method: OpenAI-compatible prediction plus ToolVista xLAM function-call scoring
+    source_project: xLAM ActionStudio
+    dataset_name: xLAM fixed-seed one-step function-calling manifest
+    split: fixed_seed_dev
+    evaluator: toolvista.evaluation.scorers.score_xlam
+    dataset_path: data/eval/xlam/dev.jsonl
+    primary_metrics:
+      - xlam/function_name_accuracy
+      - xlam/argument_exact_match
+    metric_directions:
+      xlam/function_name_accuracy: maximize
+      xlam/argument_exact_match: maximize
+
+  mllm_router:
+    execution: native_mllm_router
+    profile: light
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool text Router fixed-seed manifest
+    split: fixed_seed_dev
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router/dev.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+
+  qwen3vl_general_light:
+    execution: swift_eval
+    profile: light
+    method: ms-swift swift eval through EvalScope VLMEvalKit backend
+    source_project: ms-swift and VLMEvalKit
+    dataset_name: RealWorldQA, MathVision_MINI, MMMU_DEV_VAL, OCRBench
+    split: upstream validation or benchmark default
+    evaluator: swift eval --eval_backend VLMEvalKit
+    eval_backend: VLMEvalKit
+    eval_limit: 100
+    swift_datasets:
+      - RealWorldQA
+      - MathVision_MINI
+      - MMMU_DEV_VAL
+      - OCRBench
+    primary_metrics:
+      - vlmevalkit/realworldqa/acc
+      - vlmevalkit/mathvision_mini/accuracy
+      - vlmevalkit/mmmu_dev_val/accuracy
+      - vlmevalkit/ocrbench/score
+    metric_scales:
+      RealWorldQA/acc: 0.01
+    metric_directions:
+      vlmevalkit/realworldqa/acc: maximize
+      vlmevalkit/mathvision_mini/accuracy: maximize
+      vlmevalkit/mmmu_dev_val/accuracy: maximize
+      vlmevalkit/ocrbench/score: maximize

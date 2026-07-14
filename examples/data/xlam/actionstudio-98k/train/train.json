@@ -1,0 +1,185 @@
+[
+  {
+    "unique_trajectory_id": "actionstudio-sample---train---1",
+    "task_instruction": "Based on the provided context, generate an API request or a response as an AI assistant.",
+    "format_instruction": "Return tool calls as JSON.",
+    "few_shot_examples": [],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_guest",
+          "description": "Retrieve guest information by name.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "finish",
+          "description": "Return an answer and finish the task.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ]
+          }
+        }
+      }
+    ],
+    "conversation": [
+      {
+        "role": "user",
+        "content": "Find information about John Doe."
+      },
+      {
+        "role": "assistant",
+        "content": "I will retrieve the guest record.",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_guest",
+              "arguments": {
+                "name": "John Doe"
+              }
+            },
+            "id": "call-1"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "name": "get_guest",
+        "content": {
+          "name": "John Doe",
+          "age": 35
+        },
+        "tool_call_id": "call-1"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "finish",
+              "arguments": {
+                "answer": "John Doe is 35 years old."
+              }
+            },
+            "id": "call-2"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "unique_trajectory_id": "actionstudio-sample---train---2",
+    "task_instruction": "Use the available tools when needed.",
+    "format_instruction": "Return one or more calls in a JSON list.",
+    "few_shot_examples": [],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "game_lookup",
+          "description": "Retrieve game information by ID.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        }
+      }
+    ],
+    "conversation": [
+      {
+        "role": "user",
+        "content": "Look up games 13579 and 24680."
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "game_lookup",
+              "arguments": {
+                "id": 13579
+              }
+            },
+            "id": "parallel-1"
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "game_lookup",
+              "arguments": {
+                "id": 24680
+              }
+            },
+            "id": "parallel-2"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": [
+          {
+            "id": 13579,
+            "title": "First Game"
+          },
+          {
+            "id": 24680,
+            "title": "Second Game"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": "I found First Game and Second Game."
+      }
+    ]
+  },
+  {
+    "unique_trajectory_id": "actionstudio-sample---train---3",
+    "task_instruction": "Answer directly when no tool is required.",
+    "format_instruction": "Use an empty tool call list when no function is needed.",
+    "few_shot_examples": [],
+    "tools": [],
+    "conversation": [
+      {
+        "role": "user",
+        "content": "Explain what an API is."
+      },
+      {
+        "role": "assistant",
+        "content": "An API is an interface that lets software systems communicate.",
+        "tool_calls": []
+      }
+    ]
+  }
+]

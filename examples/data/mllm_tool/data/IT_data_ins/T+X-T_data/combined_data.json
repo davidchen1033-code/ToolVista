@@ -1,0 +1,20 @@
+[
+  {
+    "id": 3,
+    "input_modality": "text",
+    "output_modality": "text",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "Select a combined-dataset text model.",
+        "input_modality": "text"
+      },
+      {
+        "from": "gpt",
+        "value": "combined/example-model",
+        "ambiguity": -1,
+        "output_modality": "text"
+      }
+    ]
+  }
+]

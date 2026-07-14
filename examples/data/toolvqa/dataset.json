@@ -1,0 +1,109 @@
+{
+  "0": {
+    "_toolvista_fixture": true,
+    "tools": [
+      {
+        "name": "ImageDescription"
+      },
+      {
+        "name": "OCR"
+      },
+      {
+        "name": "GoogleSearch"
+      }
+    ],
+    "files": [
+      {
+        "type": "image",
+        "path": "images/part3/TB1tM0jLXXXXXa1XFXXunYpLFXX.jpg",
+        "url": null
+      }
+    ],
+    "dialogs": [
+      {
+        "role": "user",
+        "content": "Are these leggings likely part of a men's or women's collection?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "ImageDescription",
+              "arguments": {
+                "image": "images/part3/TB1tM0jLXXXXXa1XFXXunYpLFXX.jpg"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "name": "ImageDescription",
+        "content": {
+          "type": "text",
+          "content": "The image shows three shirtless male models wearing differently colored thermal leggings: gray, black, and white."
+        }
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "OCR",
+              "arguments": {
+                "image": "images/part3/TB1tM0jLXXXXXa1XFXXunYpLFXX.jpg"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "name": "OCR",
+        "content": {
+          "type": "text",
+          "content": "alvin Kle n; 29; 365"
+        }
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "GoogleSearch",
+              "arguments": {
+                "query": "Calvin Klein 365 thermal leggings collection"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "name": "GoogleSearch",
+        "content": {
+          "type": "text",
+          "content": "Calvin Klein Womens Performance Logo-Tape Thermal High-Waisted Leggings Black"
+        }
+      },
+      {
+        "role": "assistant",
+        "content": "Men's collection"
+      }
+    ],
+    "gt_answer": {
+      "whitelist": [
+        [
+          "Men's collection",
+          "men's collection",
+          "men"
+        ]
+      ],
+      "blacklist": null
+    }
+  }
+}
