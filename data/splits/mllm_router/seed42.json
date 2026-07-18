@@ -1,0 +1,27 @@
+{
+  "source": "MLLM-Tool",
+  "file_keys": [
+    "text",
+    "image",
+    "video"
+  ],
+  "seed": 42,
+  "namespace": "mllm_router",
+  "algorithm": "sha256-first-64-bits",
+  "eval_fraction": 0.2,
+  "catalog_size": 853,
+  "train_normalized_prompt_count": 5460,
+  "eval_normalized_prompt_count": 1444,
+  "train_rows": 33438,
+  "train_rows_by_modality": {
+    "image": 8479,
+    "text": 24780,
+    "video": 179
+  },
+  "full_rows": 1726,
+  "light_rows": 200,
+  "skipped": 0,
+  "overlap": {
+    "normalized_prompt_count": 0
+  }
+}

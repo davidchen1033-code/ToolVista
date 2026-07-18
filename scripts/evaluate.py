@@ -61,6 +61,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--api-model", type=_non_empty_text)
     parser.add_argument("--infer-backend", default="vllm", type=_non_empty_text)
     parser.add_argument("--eval-url", type=_non_empty_text)
+    parser.add_argument("--judge-api-base", type=_non_empty_text)
+    parser.add_argument("--judge-model", type=_non_empty_text)
     parser.add_argument("--swift-executable", default="swift", type=_non_empty_text)
     parser.add_argument("--timeout", type=_positive_finite_float, default=120.0)
     parser.add_argument("--stage", type=_non_empty_text)
@@ -120,14 +122,18 @@ def _display_command(argv: Sequence[str]) -> str:
             redact_next = False
             continue
         inline_flag = next(
-            (flag for flag in ("--api-base", "--eval-url") if token.startswith(f"{flag}=")),
+            (
+                flag
+                for flag in ("--api-base", "--eval-url", "--judge-api-base")
+                if token.startswith(f"{flag}=")
+            ),
             None,
         )
         if inline_flag is not None:
             sanitized.append(f"{inline_flag}={_redact_url(token.split('=', 1)[1])}")
             continue
         sanitized.append(token)
-        if token in {"--api-base", "--eval-url"}:
+        if token in {"--api-base", "--eval-url", "--judge-api-base"}:
             redact_next = True
     return shlex.join(sanitized)
 
@@ -191,9 +197,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.score_only and (
         args.benchmark is None
         or len(specs) != 1
-        or not specs[0].execution.startswith("native_")
+        or specs[0].execution not in {"native_xlam", "native_mllm_router", "visual_rft_coco"}
     ):
-        raise SystemExit("--score-only requires one native --benchmark in Phase 1.")
+        raise SystemExit("--score-only requires one native --benchmark (xLAM, MLLM Router, or Visual-RFT COCO).")
 
     command_argv = list(sys.argv[1:] if argv is None else argv)
     summary = evaluate_suite(
@@ -205,6 +211,8 @@ def main(argv: list[str] | None = None) -> None:
         api_model=args.api_model,
         infer_backend=args.infer_backend,
         eval_url=args.eval_url,
+        judge_api_base=args.judge_api_base,
+        judge_model=args.judge_model,
         timeout=args.timeout,
         score_only=args.score_only,
         resume=args.resume,

@@ -57,7 +57,22 @@ def resolve_toolmeta(data_root: Path, toolvqa_root: Path) -> Path:
     )
 
 
-def _resolve_media(source_root: Path, raw_path: str, media_root: Path | None) -> Path:
+def _media_index(media_root: Path | None) -> dict[str, list[Path]]:
+    if media_root is None:
+        return {}
+    index: dict[str, list[Path]] = {}
+    for path in media_root.rglob("*"):
+        if path.is_file():
+            index.setdefault(path.name, []).append(path.resolve())
+    return index
+
+
+def _resolve_media(
+    source_root: Path,
+    raw_path: str,
+    media_root: Path | None,
+    media_index: Mapping[str, list[Path]] | None = None,
+) -> Path:
     candidate = Path(raw_path)
     if candidate.is_file():
         return candidate.resolve()
@@ -68,7 +83,8 @@ def _resolve_media(source_root: Path, raw_path: str, media_root: Path | None) ->
 
     if media_root is None:
         raise FileNotFoundError(f"Missing ToolVQA media: {raw_path}")
-    matches = [path.resolve() for path in media_root.rglob(candidate.name) if path.is_file()]
+    index = media_index if media_index is not None else _media_index(media_root)
+    matches = index.get(candidate.name, [])
     if not matches:
         raise FileNotFoundError(f"Missing ToolVQA media: {raw_path}")
     if len(matches) != 1:
@@ -101,6 +117,7 @@ def prepare_data(
         isinstance(row, Mapping) and row.get("_toolvista_fixture") is True
         for row in prepared.values()
     )
+    indexed_media = _media_index(media_root)
 
     for sample_id, row in prepared.items():
         if not isinstance(row, dict):
@@ -114,7 +131,7 @@ def prepare_data(
             old = file_item.get("path")
             if not isinstance(old, str) or not old:
                 raise ValueError(f"ToolVQA sample {sample_id!r} has an invalid media path.")
-            resolved = str(_resolve_media(data_root, old, media_root))
+            resolved = str(_resolve_media(data_root, old, media_root, indexed_media))
             file_item["path"] = resolved
             row["dialogs"] = _rewrite_matching_arguments(
                 row.get("dialogs", []), old, resolved
@@ -347,7 +364,14 @@ def run_toolvqa(
         completed = command_runner(
             command,
             cwd=str(opencompass_root),
-            env=os.environ.copy(),
+            env={
+                **os.environ,
+                "HF_HOME": os.environ.get(
+                    "HF_HOME", "/root/autodl-tmp/cache/huggingface"
+                ),
+                "HF_HUB_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+            },
             capture_output=True,
             text=True,
             check=False,

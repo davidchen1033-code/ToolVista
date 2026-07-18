@@ -127,7 +127,18 @@ def prepare_mllm_router_rows(paths: ToolVistaPaths, *, limit: int, seed: int) ->
         if row is not None
     ]
 
-    selected = _fixed_seed_select(rows, limit=limit, seed=seed, namespace="mllm_router")
+    merged_rows: dict[str, dict[str, Any]] = {}
+    for row in sorted(rows, key=lambda item: str(item["sample_id"])):
+        text = str(row["normalized_text"])
+        if text not in merged_rows:
+            merged_rows[text] = dict(row)
+            merged_rows[text]["target_tools"] = sorted(set(row["target_tools"]))
+        else:
+            merged_rows[text]["target_tools"] = sorted(
+                set(merged_rows[text]["target_tools"]) | set(row["target_tools"])
+            )
+
+    selected = _fixed_seed_select(merged_rows.values(), limit=limit, seed=seed, namespace="mllm_router")
     validate_manifest(selected)
     return selected
 

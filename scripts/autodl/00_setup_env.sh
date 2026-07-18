@@ -3,12 +3,14 @@ set -euo pipefail
 
 TOOLVISTA_ROOT="${TOOLVISTA_ROOT:-/root/autodl-tmp/ToolVista}"
 MS_SWIFT_ROOT="${MS_SWIFT_ROOT:-/root/autodl-tmp/ms-swift}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/venvs/toolvista/bin/python}"
+SWIFT_BIN="${SWIFT_BIN:-/root/autodl-tmp/venvs/toolvista/bin/swift}"
 INSTALL_VLLM="${INSTALL_VLLM:-false}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
+export HF_HOME="${HF_HOME:-/root/autodl-tmp/cache/huggingface}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 "${PYTHON_BIN}" -m pip install --upgrade pip
-"${PYTHON_BIN}" -m pip install -U huggingface_hub pyyaml pillow tensorboard wandb
+"${PYTHON_BIN}" -m pip install -U huggingface_hub pyyaml pillow tensorboard wandb pycocotools
 
 if [[ ! -d "${MS_SWIFT_ROOT}" ]]; then
   git clone https://github.com/modelscope/ms-swift.git "${MS_SWIFT_ROOT}"
@@ -36,7 +38,7 @@ cd "${TOOLVISTA_ROOT}"
   scripts/export_toolvqa.py \
   scripts/export_visual_rft.py
 
-swift --help >/dev/null
+"${SWIFT_BIN}" sft --help >/dev/null
 
 echo "Environment ready."
 echo "ToolVista: ${TOOLVISTA_ROOT}"

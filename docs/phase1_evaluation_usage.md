@@ -1,6 +1,11 @@
 # Phase 1 轻量评测使用说明
 
-Phase 1 只提供三个当前可稳定执行的评测入口。专项评测尽量复用上游的数据定义；xLAM 和 MLLM-Tool 缺少适合本项目流程的 held-out scorer，所以 ToolVista 只补充两个小型 scorer。通用视觉评测直接调用 ms-swift 已集成的 EvalScope/VLMEvalKit，不复制 evaluator 源码。
+> 本文保留早期 200 条 light evaluator 工作流，仅用于兼容与调试。
+> 正式 C0、无泄漏 train/full/light 拆分和 AutoDL 训练准备请使用
+> `docs/c0_data_and_training_readiness.md` 与
+> `scripts/prepare_training_and_eval_data.py`。
+
+本文以下主体保留最初三个评测入口的历史说明。当前正式 C0-C4 五轮已经扩展为六项同构 light suite，另外统一接入 ToolVQA step、BFCL v4 non-live 和 Visual-RFT COCO；以 `configs/evaluation/suites.yaml` 与 `scripts/autodl/README.md` 为准。专项评测尽量复用上游的数据定义；xLAM 和 MLLM-Tool 缺少适合本项目流程的 held-out scorer，所以 ToolVista 只补充两个小型 scorer。通用视觉评测直接调用 ms-swift 已集成的 EvalScope/VLMEvalKit，不复制 evaluator 源码。
 
 | 测试 | 测试方式 | 测评集及 split | 来源项目 | evaluator/scorer | 轻量限制 | 主要指标 |
 |---|---|---|---|---|---:|---|
@@ -10,7 +15,7 @@ Phase 1 只提供三个当前可稳定执行的评测入口。专项评测尽量
 
 前两项是从 xLAM ActionStudio 和 MLLM-Tool 上游数据中固定 seed 选出的 ToolVista 内部开发回归集，不是上游官方 held-out test，也不能当作 leaderboard 成绩。通用视觉项由 VLMEvalKit 按上游默认 split 下载和评分，可用于与相同 evaluator、相同版本和相同生成配置下的公开结果对照。
 
-ToolVQA、Visual-RFT、MAT 和 BFCL 暂不属于 Phase 1。它们需要各自 evaluator 的完整集成，不能用这三个入口假装覆盖。
+ToolVQA step、BFCL v4 non-live 和 Visual-RFT COCO 现已进入正式五轮 suite，并继续复用各自上游 evaluator。ToolVQA e2e 和 MAT 仍未进入五轮统一 light suite。
 
 ## 1. 准备冻结评测文件
 
@@ -63,15 +68,15 @@ swift deploy \
 
 ## 3. 基座与每次训练后的轻量回测
 
-训练前先用完整 Phase 1 轻量 suite 记录 C0 基座，生成后续命令引用的 `runs/c0_base_seed42/summary.json`：
+训练前先用完整 Phase 1 轻量 suite 记录 C0 基座，生成后续命令引用的 `runs/c0_base_light_seed42/summary.json`：
 
 ```bash
 CHECKPOINT=/root/autodl-tmp/model/Qwen3-VL-4B-Instruct
 API_MODEL=$(basename "$CHECKPOINT")
 python scripts/evaluate.py \
-  --suite c3_light \
+  --suite c0_light \
   --checkpoint "$CHECKPOINT" \
-  --run-id c0_base_seed42 \
+  --run-id c0_base_light_seed42 \
   --stage c0-base \
   --api-base http://127.0.0.1:8000/v1 \
   --api-model "$API_MODEL" \
@@ -95,7 +100,7 @@ python scripts/evaluate.py \
   --api-model "$API_MODEL" \
   --eval-url http://127.0.0.1:8000/v1 \
   --seed 42 \
-  --baseline-summary runs/c0_base_seed42/summary.json \
+  --baseline-summary runs/c0_base_light_seed42/summary.json \
   --wandb \
   --wandb-group c1-xlam-sft
 ```
@@ -114,7 +119,7 @@ python scripts/evaluate.py \
   --api-model "$API_MODEL" \
   --eval-url http://127.0.0.1:8000/v1 \
   --seed 42 \
-  --baseline-summary runs/c0_base_seed42/summary.json \
+  --baseline-summary runs/c0_base_light_seed42/summary.json \
   --history-summary runs/c1_xlam_sft_seed42/summary.json \
   --wandb \
   --wandb-group c3-mllm-router-sft

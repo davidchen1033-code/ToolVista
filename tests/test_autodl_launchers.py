@@ -14,6 +14,25 @@ AUTODL = REPO_ROOT / "scripts" / "autodl"
 
 
 class AutoDLLauncherStaticContractTest(unittest.TestCase):
+    def test_repository_forces_shell_scripts_to_lf(self) -> None:
+        attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertIn("*.sh text eol=lf", attributes)
+
+    def test_setup_checks_a_supported_swift_route(self) -> None:
+        text = (AUTODL / "00_setup_env.sh").read_text(encoding="utf-8")
+        self.assertIn('"${SWIFT_BIN}" sft --help', text)
+        self.assertNotIn("swift --help", text)
+
+    def test_autodl_defaults_use_verified_venv_and_hf_mirror(self) -> None:
+        for filename in ("00_setup_env.sh", "sft_common.sh", "rl_common.sh"):
+            with self.subTest(filename=filename):
+                text = (AUTODL / filename).read_text(encoding="utf-8")
+                self.assertIn("/root/autodl-tmp/venvs/toolvista/bin/python", text)
+                self.assertIn("https://hf-mirror.com", text)
+        for filename in ("sft_common.sh", "rl_common.sh"):
+            text = (AUTODL / filename).read_text(encoding="utf-8")
+            self.assertIn("/root/autodl-tmp/venvs/toolvista/bin/swift", text)
+
     def test_serial_sft_wrappers_delegate_to_common_runner(self) -> None:
         expected = {
             "05_train_xlam_sft.sh": ("c1-xlam", "xlam_train.jsonl"),
@@ -37,6 +56,7 @@ class AutoDLLauncherStaticContractTest(unittest.TestCase):
         self.assertIn("toolvqa=0.2", c3)
         self.assertIn("xlam=0.2", c3)
         self.assertIn("C2_CHECKPOINT", c3)
+        self.assertIn("mllm_tool_router_train.jsonl", c3)
 
     def test_sft_common_loads_only_previous_model_weights(self) -> None:
         text = (AUTODL / "sft_common.sh").read_text(encoding="utf-8")
@@ -80,6 +100,7 @@ class AutoDLLauncherStaticContractTest(unittest.TestCase):
             '--model "${BASE_MODEL}"',
             '--adapters "${C3_CHECKPOINT}"',
             '--ref_adapters "${C3_CHECKPOINT}"',
+            'visual_rft_coco_base65_train.jsonl',
             '--external_plugins "${REWARD_PLUGIN}"',
             'REWARD_FUNCS="${REWARD_FUNCS:-visual_rft format}"',
             '--reward_funcs "${reward_func_args[@]}"',
@@ -100,6 +121,14 @@ class AutoDLLauncherStaticContractTest(unittest.TestCase):
     def test_light_eval_wrapper_delegates_to_unified_evaluator(self) -> None:
         text = (AUTODL / "12_run_light_eval.sh").read_text(encoding="utf-8")
         for required in (
+            'SUITE="${SUITE:?',
+            'ALGORITHM="${ALGORITHM:-}"',
+            'TOOLVQA_PYTHON="${TOOLVQA_PYTHON:-/root/autodl-tmp/venvs/toolvqa/bin/python}"',
+            'BFCL_PYTHON="${BFCL_PYTHON:-/root/autodl-tmp/venvs/bfcl/bin/python}"',
+            'from opencompass.datasets.gta_bench import GTABenchEvaluator',
+            'export TOOLVQA_PYTHON',
+            'export BFCL_PYTHON',
+            'algorithm_args+=(--algorithm "$ALGORITHM")',
             'scripts/evaluate.py',
             '--suite "${SUITE}"',
             '--checkpoint "${CHECKPOINT}"',
@@ -107,9 +136,31 @@ class AutoDLLauncherStaticContractTest(unittest.TestCase):
             '--stage "${STAGE}"',
             '--api-base "${API_BASE}"',
             '--api-model "${API_MODEL}"',
+            'JUDGE_API_BASE="${JUDGE_API_BASE:?',
+            'JUDGE_MODEL="${JUDGE_MODEL:?',
+            '--judge-api-base "${JUDGE_API_BASE}"',
+            '--judge-model "${JUDGE_MODEL}"',
+            'patch_msswift_vlmeval.sh',
             '--wandb-group "${WANDB_GROUP}"',
         ):
             self.assertIn(required, text)
+        self.assertIn("LMUData", text)
+        self.assertIn("/root/autodl-tmp/cache/vlmevalkit", text)
+
+    def test_full_eval_wrapper_selects_c0_full(self) -> None:
+        text = (AUTODL / "13_run_full_eval.sh").read_text(encoding="utf-8")
+        self.assertIn('SUITE="${SUITE:-c0_full}"', text)
+        self.assertIn("12_run_light_eval.sh", text)
+
+    def test_c0_preparation_wrapper_runs_split_then_readiness(self) -> None:
+        text = (AUTODL / "04_prepare_c0_and_training_data.sh").read_text(encoding="utf-8")
+        self.assertIn("prepare_training_and_eval_data.py", text)
+        self.assertIn("prepare_visual_rft_coco_eval.py", text)
+        self.assertIn("prepare_bfcl_eval.py", text)
+        self.assertIn("prefetch_vlmevalkit_data.py", text)
+        self.assertIn("check_c0_readiness.py", text)
+        self.assertIn("--mllm-file-keys text image video", text)
+        self.assertIn("--overwrite", text)
 
 
 def find_bash() -> Path | None:
@@ -143,11 +194,22 @@ class AutoDLLauncherRuntimeContractTest(unittest.TestCase):
         self.fake_swift = self.make_recorder("fake-swift.sh", "swift")
 
     def make_recorder(self, name: str, command: str) -> Path:
-        path = self.root / name
-        path.write_text(
+        delegate = (
+            "if [[ \"${1:-}\" == */build_sft_replay.py ]]; then\n"
+            "  python \"$@\"\n"
+            "fi\n"
+            if command == "python"
+            else ""
+        )
+        script = (
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            f"python -c 'import json,os,sys; print(json.dumps({{\"command\":\"{command}\",\"args\":sys.argv[1:],\"wandb_group\":os.environ.get(\"WANDB_RUN_GROUP\")}}))' \"$@\" >> \"$COMMAND_LOG\"\n",
+            f"python -c 'import json,os,sys; print(json.dumps({{\"command\":\"{command}\",\"args\":sys.argv[1:],\"wandb_group\":os.environ.get(\"WANDB_RUN_GROUP\")}}))' \"$@\" >> \"$COMMAND_LOG\"\n"
+            + delegate
+        )
+        path = self.root / name
+        path.write_text(
+            script,
             encoding="utf-8",
             newline="\n",
         )
@@ -160,6 +222,13 @@ class AutoDLLauncherRuntimeContractTest(unittest.TestCase):
         if os.name == "nt":
             return f"/{resolved.drive[0].lower()}{resolved.as_posix()[2:]}"
         return resolved.as_posix()
+
+    @staticmethod
+    def normalized_bash_path(value: str) -> str:
+        value = value.replace("\\", "/")
+        if os.name == "nt" and len(value) >= 3 and value[1:3] == ":/":
+            return f"/{value[0].lower()}{value[2:]}"
+        return value
 
     def write_rows(self, name: str, count: int, *, rl: bool = False) -> Path:
         path = self.root / name
@@ -234,7 +303,10 @@ class AutoDLLauncherRuntimeContractTest(unittest.TestCase):
             },
         )
         c2_args = next(item["args"] for item in c2_commands if item["command"] == "swift")
-        self.assertEqual(self.option(c2_args, "--resume_from_checkpoint"), self.posix(self.c1))
+        self.assertEqual(
+            self.normalized_bash_path(self.option(c2_args, "--resume_from_checkpoint")),
+            self.posix(self.c1),
+        )
         self.assertEqual(self.option(c2_args, "--resume_only_model"), "true")
         self.assertEqual(len(c2_output.read_text(encoding="utf-8").splitlines()), 5)
 
@@ -251,7 +323,10 @@ class AutoDLLauncherRuntimeContractTest(unittest.TestCase):
             },
         )
         c3_args = next(item["args"] for item in c3_commands if item["command"] == "swift")
-        self.assertEqual(self.option(c3_args, "--resume_from_checkpoint"), self.posix(self.c2))
+        self.assertEqual(
+            self.normalized_bash_path(self.option(c3_args, "--resume_from_checkpoint")),
+            self.posix(self.c2),
+        )
         self.assertEqual(len(c3_output.read_text(encoding="utf-8").splitlines()), 10)
 
     def test_all_rl_branches_share_c3_and_only_change_algorithm_arguments(self) -> None:
@@ -274,8 +349,14 @@ class AutoDLLauncherRuntimeContractTest(unittest.TestCase):
             args = next(item["args"] for item in commands if item["command"] == "swift")
             self.assertEqual(args[:2], ["rlhf", "--rlhf_type"])
             self.assertEqual(self.option(args, "--loss_type"), loss_type)
-            self.assertEqual(self.option(args, "--adapters"), self.posix(self.c3))
-            self.assertEqual(self.option(args, "--ref_adapters"), self.posix(self.c3))
+            self.assertEqual(
+                self.normalized_bash_path(self.option(args, "--adapters")),
+                self.posix(self.c3),
+            )
+            self.assertEqual(
+                self.normalized_bash_path(self.option(args, "--ref_adapters")),
+                self.posix(self.c3),
+            )
             reward_index = args.index("--reward_funcs")
             self.assertEqual(args[reward_index + 1:reward_index + 3], ["visual_rft", "format"])
             common_values.append(

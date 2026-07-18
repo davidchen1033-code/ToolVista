@@ -3,9 +3,11 @@ __pycache__/
 *.py[cod]
 
 # Local datasets and generated conversion outputs
+data/raw/
 data/exports/
 data/reports/
 data/materialized_images/
+data/eval/
 runs/
 
 # Machine-specific path configuration
@@ -13,3 +15,17 @@ configs/local.windows.yaml
 
 # Test temporary directories
 tests/tmp*/
+
+# Generated benchmark material
+data/eval/
+
+# Local training and evaluation runtime outputs
+outputs/
+logs/
+wandb/
+result/
+
+# Python test and coverage outputs
+.pytest_cache/
+.coverage
+htmlcov/

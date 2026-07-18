@@ -11,6 +11,7 @@ from toolvista.evaluation.io import (
     load_suites,
     load_yaml_mapping,
     normalize_swift_metrics,
+    normalize_vlmevalkit_artifact_metrics,
     read_last_swift_eval_report,
     write_json,
     write_jsonl,
@@ -293,6 +294,16 @@ class EvaluationModelTest(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, expected):
                 EvaluationResult.from_dict(payload)
 
+    def test_result_counts_may_all_be_unknown_but_not_partially_unknown(self) -> None:
+        payload = self._result_payload()
+        payload.update({"attempted": None, "completed": None, "failed": None})
+
+        self.assertEqual(EvaluationResult.from_dict(payload).attempted, None)
+
+        payload["completed"] = 1
+        with self.assertRaisesRegex(ValueError, "together"):
+            EvaluationResult.from_dict(payload)
+
     def test_result_from_dict_validates_enums_and_copies_nested_mappings(self) -> None:
         for field, value in (("prediction_mode", "resume"), ("status", "unknown"), ("metrics", [])):
             payload = self._result_payload()
@@ -340,10 +351,32 @@ class EvaluationIOTest(unittest.TestCase):
         self.assertEqual(registry["xlam_function_calling"].execution, "native_xlam")
         self.assertEqual(registry["mllm_router"].execution, "native_mllm_router")
         self.assertEqual(registry["qwen3vl_general_light"].eval_backend, "VLMEvalKit")
-        self.assertEqual(
-            suites["c3_light"],
-            ["xlam_function_calling", "mllm_router", "qwen3vl_general_light"],
-        )
+        checkpoint_suite = [
+            "xlam_function_calling",
+            "toolvqa_step_light",
+            "bfcl_non_live_light",
+            "mllm_router",
+            "qwen3vl_general_light",
+            "visual_rft_coco_light",
+        ]
+        for suite_name in ("c0_light", "c1_light", "c2_light", "c3_light", "c4_light"):
+            self.assertEqual(suites[suite_name], checkpoint_suite)
+        full_suite = [
+            "xlam_function_calling_full",
+            "toolvqa_step_full",
+            "bfcl_non_live_full",
+            "mllm_router_full",
+            "qwen3vl_general_full",
+            "visual_rft_coco_full",
+        ]
+        self.assertEqual(suites["c0_full"], full_suite)
+        self.assertEqual(suites["c4_full"], full_suite)
+        self.assertEqual(registry["toolvqa_step_light"].execution, "toolvqa_step")
+        self.assertEqual(registry["bfcl_non_live_light"].execution, "bfcl")
+        self.assertEqual(registry["visual_rft_coco_light"].execution, "visual_rft_coco")
+        self.assertEqual(registry["xlam_function_calling_full"].profile, "full")
+        self.assertEqual(registry["mllm_router_full"].profile, "full")
+        self.assertIsNone(registry["qwen3vl_general_full"].eval_limit)
 
     def test_registry_and_suites_reject_malformed_entries(self) -> None:
         registry_path = self._temporary_file("benchmarks:\n  broken: not-a-mapping\n", ".yaml")
@@ -463,6 +496,57 @@ class EvaluationIOTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "normalized metric key collision"):
             normalize_swift_metrics(report, backend="VLMEvalKit", metric_scales={})
+
+
+    def test_vlmevalkit_artifact_parser_preserves_dataset_metric_contracts(self) -> None:
+        root = Path(tempfile.mkdtemp(dir=REPO_ROOT / "tests"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        model_dir = root / "c1-candidate"
+        model_dir.mkdir()
+        (model_dir / "c1-candidate_RealWorldQA_acc.csv").write_text(
+            '"split","Overall"\n"none","0.71"\n', encoding="utf-8"
+        )
+        (model_dir / "c1-candidate_MathVision_MINI_fixed-judge_score.csv").write_text(
+            '"Subject","tot","prefetch","hit","prefetch_rate","acc"\n'
+            '"Overall","4","1","1","25","25"\n',
+            encoding="utf-8",
+        )
+        (model_dir / "c1-candidate_OCRBench_score.json").write_text(
+            json.dumps({"Final Score": 97, "Final Score Norm": 9.7}), encoding="utf-8"
+        )
+        import pandas as pd
+
+        pd.DataFrame(
+            {"split": ["dev", "validation", "validation"], "hit": [1, 0, 1]}
+        ).to_excel(model_dir / "c1-candidate_MMMU_DEV_VAL_openai_result.xlsx", index=False)
+
+        upstream, metrics, artifacts = normalize_vlmevalkit_artifact_metrics(
+            root,
+            datasets=("RealWorldQA", "MathVision_MINI", "MMMU_DEV_VAL", "OCRBench"),
+        )
+
+        self.assertEqual(metrics["vlmevalkit/realworldqa/acc"], 0.71)
+        self.assertEqual(metrics["vlmevalkit/mathvision_mini/accuracy"], 0.25)
+        self.assertAlmostEqual(metrics["vlmevalkit/mmmu_dev_val/accuracy"], 2 / 3)
+        self.assertEqual(metrics["vlmevalkit/ocrbench/score"], 97.0)
+        self.assertEqual(upstream["MMMU_DEV_VAL/accuracy/micro"], 2 / 3)
+        self.assertEqual(
+            set(artifacts),
+            {
+                "realworldqa_score",
+                "mathvision_mini_score",
+                "mmmu_dev_val_result",
+                "ocrbench_score",
+            },
+        )
+
+    def test_vlmevalkit_artifact_parser_rejects_missing_scores(self) -> None:
+        root = Path(tempfile.mkdtemp(dir=REPO_ROOT / "tests"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        (root / "candidate").mkdir()
+
+        with self.assertRaisesRegex(ValueError, "MathVision_MINI"):
+            normalize_vlmevalkit_artifact_metrics(root, datasets=("MathVision_MINI",))
 
     def test_json_helpers_write_utf8_with_trailing_newlines(self) -> None:
         json_path = self._temporary_file("", ".json")

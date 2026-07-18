@@ -503,17 +503,25 @@ class ToolVQAAdapter(BaseDatasetAdapter):
             return {"value": parsed}, "tool input JSON is not an object; preserved under value."
         return {}, "tool input is empty; using empty arguments."
 
-    @staticmethod
+    @classmethod
     def _normalize_media_arguments(
+        cls,
         arguments: Mapping[str, Any],
         original_image_path: str,
     ) -> tuple[Dict[str, Any], List[str]]:
         normalized = dict(arguments)
         unsupported_media_paths: List[str] = []
-        original_image_name = Path(original_image_path).name
+        original_image = Path(original_image_path)
+        original_image_name = original_image.name
         for key, value in list(normalized.items()):
             if key.lower() in {"image", "image_path", "img"} and isinstance(value, str):
-                if Path(value).name == original_image_name:
+                argument_image = Path(value)
+                same_image = argument_image.name == original_image_name or (
+                    argument_image.stem == original_image.stem
+                    and argument_image.suffix.lower() in cls.output_image_suffixes
+                    and original_image.suffix.lower() in cls.output_image_suffixes
+                )
+                if same_image:
                     normalized[key] = "images[0]"
                 else:
                     unsupported_media_paths.append(value)
