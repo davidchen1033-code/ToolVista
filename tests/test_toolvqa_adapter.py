@@ -109,15 +109,17 @@ class ToolVQAAdapterTest(unittest.TestCase):
 
         self.assertEqual(adapter._resolve_image_path("/data/images/a.jpg"), "/data/images/a.jpg")
 
-    def test_image_argument_with_same_stem_but_different_suffix_is_rejected(self) -> None:
+    def test_image_argument_with_same_stem_but_different_suffix_is_normalized(self) -> None:
         adapter = ToolVQAAdapter(make_paths())
         raw = json.loads((SAMPLE_ROOT / "train_sample.jsonl").read_text(encoding="utf-8"))
         raw["context"] = [dict(raw["context"][0], input='{"image":"image/TB1tM0jLXXXXXa1XFXXunYpLFXX.png"}')]
 
         result = adapter.adapt(raw)
 
-        self.assertFalse(result.ok)
-        self.assertIn("other than the original input", result.errors[0])
+        self.assertTrue(result.ok, result.to_report_dict())
+        assert result.sample is not None
+        call = json.loads(result.sample.messages[1].content)
+        self.assertEqual(call["arguments"]["image"], "images[0]")
 
     def test_jsonl_reader_accepts_utf8_bom(self) -> None:
         root = self._temporary_dataset_root()

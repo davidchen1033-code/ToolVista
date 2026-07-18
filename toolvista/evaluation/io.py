@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import posixpath
 import re
 from math import isfinite
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
@@ -174,6 +175,108 @@ def _normalize_path_text(value: str | Path) -> str:
 
 def _metric_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _finite_artifact_number(value: Any, *, source: str) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"VLMEvalKit artifact {source} must be numeric: {value!r}") from exc
+    if not isfinite(numeric):
+        raise ValueError(f"VLMEvalKit artifact {source} must be finite: {value!r}")
+    return numeric
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def _single_artifact(model_dir: Path, suffix: str) -> Path:
+    matches = sorted(model_dir.glob(f"*_{suffix}"))
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one VLMEvalKit artifact '*_{suffix}' in {model_dir}, "
+            f"found {len(matches)}."
+        )
+    return matches[0]
+
+
+def normalize_vlmevalkit_artifact_metrics(
+    vlmeval_run_dir: str | Path,
+    *,
+    datasets: Sequence[str],
+) -> tuple[dict[str, Any], dict[str, float], dict[str, str]]:
+    """Extract stable metrics from VLMEvalKit's native CSV/JSON/XLSX artifacts."""
+    run_dir = Path(vlmeval_run_dir)
+    model_dirs = sorted(
+        path for path in run_dir.iterdir() if path.is_dir() and path.name not in {"configs", "logs"}
+    )
+    if len(model_dirs) != 1:
+        raise ValueError(
+            f"Expected exactly one VLMEvalKit model artifact directory in {run_dir}, "
+            f"found {len(model_dirs)}."
+        )
+    model_dir = model_dirs[0]
+    requested = set(datasets)
+    supported = {"RealWorldQA", "MathVision_MINI", "MMMU_DEV_VAL", "OCRBench"}
+    unsupported = sorted(requested - supported)
+    if unsupported:
+        raise ValueError(f"Unsupported VLMEvalKit artifact datasets: {unsupported}")
+
+    upstream: dict[str, Any] = {}
+    normalized: dict[str, float] = {}
+    artifacts: dict[str, str] = {}
+
+    if "RealWorldQA" in requested:
+        path = _single_artifact(model_dir, "RealWorldQA_acc.csv")
+        rows = _read_csv_rows(path)
+        if len(rows) != 1 or "Overall" not in rows[0]:
+            raise ValueError(f"Invalid RealWorldQA score artifact: {path}")
+        value = _finite_artifact_number(rows[0]["Overall"], source=f"{path}:Overall")
+        upstream["RealWorldQA/acc/Overall"] = value
+        normalized["vlmevalkit/realworldqa/acc"] = value
+        artifacts["realworldqa_score"] = path.as_posix()
+
+    if "MathVision_MINI" in requested:
+        path = _single_artifact(model_dir, "MathVision_MINI_*_score.csv")
+        rows = _read_csv_rows(path)
+        overall = next((row for row in rows if row.get("Subject") == "Overall"), None)
+        if overall is None or "acc" not in overall:
+            raise ValueError(f"Invalid MathVision MINI score artifact: {path}")
+        value = _finite_artifact_number(overall["acc"], source=f"{path}:Overall/acc") * 0.01
+        upstream["MathVision_MINI/accuracy/Overall"] = value
+        normalized["vlmevalkit/mathvision_mini/accuracy"] = value
+        artifacts["mathvision_mini_score"] = path.as_posix()
+
+    if "MMMU_DEV_VAL" in requested:
+        path = _single_artifact(model_dir, "MMMU_DEV_VAL_*_result.xlsx")
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise RuntimeError("pandas with Excel support is required for MMMU artifact scoring.") from exc
+        table = pd.read_excel(path)
+        if "hit" not in table.columns or len(table) == 0:
+            raise ValueError(f"Invalid MMMU result artifact: {path}")
+        hits = [_finite_artifact_number(value, source=f"{path}:hit") for value in table["hit"]]
+        if any(value not in {0.0, 1.0} for value in hits):
+            raise ValueError(f"MMMU hit values must be binary: {path}")
+        value = sum(hits) / len(hits)
+        upstream["MMMU_DEV_VAL/accuracy/micro"] = value
+        normalized["vlmevalkit/mmmu_dev_val/accuracy"] = value
+        artifacts["mmmu_dev_val_result"] = path.as_posix()
+
+    if "OCRBench" in requested:
+        path = _single_artifact(model_dir, "OCRBench_score.json")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping) or "Final Score" not in payload:
+            raise ValueError(f"Invalid OCRBench score artifact: {path}")
+        value = _finite_artifact_number(payload["Final Score"], source=f"{path}:Final Score")
+        upstream["OCRBench/score/Final Score"] = value
+        normalized["vlmevalkit/ocrbench/score"] = value
+        artifacts["ocrbench_score"] = path.as_posix()
+
+    return upstream, normalized, artifacts
 
 
 def normalize_swift_metrics(

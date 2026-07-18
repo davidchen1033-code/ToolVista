@@ -1,5 +1,10 @@
 # ToolVista AutoDL 训练启动顺序
 
+> 正式 C0 和训练前，先按 `docs/c0_data_and_training_readiness.md` 运行
+> `scripts/prepare_training_and_eval_data.py`。该脚本会重建无泄漏的
+> `xlam_train.jsonl`、text/image/video `mllm_tool_router_train.jsonl`，并生成
+> xLAM/MLLM 的 full 与 light manifest。下面旧的逐数据集导出命令只用于单独调试 adapter。
+
 这套脚本只做数据组合和调用 ms-swift。训练器、LoRA、GRPO rollout、四种 loss、checkpoint 和训练指标都由本地安装的 ms-swift 提供。
 
 ## 1. 目录结构
@@ -75,32 +80,57 @@ bash scripts/autodl/02_export_toolvqa_ms_swift.sh
 
 这部分训练带图片输入的多模态工具选择、参数生成和多步历史理解。
 
-### 3.3 MLLM-Tool text Router
+### 3.3 MLLM-Tool Router 正式数据
 
 ```bash
-python scripts/export_mllm_tool.py \
+python scripts/prepare_training_and_eval_data.py \
   --config configs/autodl.yaml \
-  --file-keys text \
-  --output data/exports/msswift_sft/mllm_tool_text_train.jsonl \
-  --report data/reports/mllm_tool_text_train.report.json \
-  --errors data/reports/mllm_tool_text_train.errors.jsonl \
-  --max-items 0
+  --seed 42 \
+  --xlam-eval-fraction 0.05 \
+  --mllm-eval-fraction 0.20 \
+  --light-limit 200 \
+  --mllm-file-keys text image video \
+  --overwrite
 ```
 
-这里明确只用 `text` 子集，训练 Router/tool ID 选择，不依赖缺失的多媒体文件。
+该命令同时生成无泄漏的 xLAM 正式训练集，以及 MLLM-Tool text/image/video Router 正式训练集。缺媒体或无法转换的少量记录会被跳过并写入报告。
 
 ## 4. 冻结评测集和 C0 基座
 
-正式训练前只生成一次固定 seed 的 xLAM 和 MLLM Router 开发集：
+正式训练前只运行一次上面的固定 seed 拆分。然后执行 readiness：
 
 ```bash
-python scripts/prepare_eval_data.py \
-  --config configs/autodl.yaml \
-  --xlam-output data/eval/xlam/dev.jsonl \
-  --mllm-output data/eval/mllm_router/dev.jsonl \
-  --xlam-limit 200 \
-  --mllm-limit 200 \
-  --seed 42
+/root/autodl-tmp/venvs/toolvista/bin/python scripts/prefetch_vlmevalkit_data.py \
+  --cache-dir /root/autodl-tmp/cache/vlmevalkit
+```
+
+该命令预取 RealWorldQA、MathVision MINI、MMMU DEV/VAL、OCRBench，
+并以 VLMEvalKit 官方 MD5 校验后原子落盘。不要让五轮评测各自在运行中下载；
+上游 downloader 不是原子写入，网络失败可能留下同名不完整 TSV。
+
+```bash
+python scripts/check_c0_readiness.py \
+  --root /root/autodl-tmp/ToolVista \
+  --model /root/autodl-tmp/model/Qwen3-VL-4B-Instruct \
+  --toolvqa-root /root/autodl-tmp/ToolVQA-release \
+  --visual-rft-root /root/autodl-tmp/Visual-RFT \
+  --coco-root /root/autodl-tmp/datasets/COCO2017
+```
+
+部署前先创建独立 ToolVQA evaluator 环境。脚本固定已验证版本、接入本地 OpenCompass/AgentLego fork，并通过 `hf-mirror.com` 预取官方评分器使用的 `all-mpnet-base-v2`：
+
+```bash
+bash scripts/autodl/00_setup_toolvqa_eval.sh
+```
+
+然后确认严格运行时；当前五轮需要 vLLM、`pycocotools`、上述 ToolVQA Python 环境，以及可以导入 `bfcl_eval` 的独立 BFCL Python 环境：
+
+```bash
+TOOLVQA_PYTHON=/root/autodl-tmp/venvs/toolvqa/bin/python \
+python scripts/check_c0_readiness.py \
+  --root /root/autodl-tmp/ToolVista \
+  --require-gpu-runtime \
+  --require-five-round-benchmarks
 ```
 
 部署基座模型：
@@ -114,27 +144,46 @@ swift deploy \
   --port 8000
 ```
 
-在另一个终端记录 C0：
+在另一个终端先记录与 C1-C4 完全同构的 C0 light，再记录 C0 full：
 
 ```bash
+TOOLVQA_PYTHON=/root/autodl-tmp/venvs/toolvqa/bin/python \
 CHECKPOINT=/root/autodl-tmp/model/Qwen3-VL-4B-Instruct \
-RUN_ID=c0_base_seed42 \
-STAGE=c0-base \
-SUITE=c3_light \
+RUN_ID=c0_base_light_seed42 \
+STAGE=c0-base-light \
+SUITE=c0_light \
+JUDGE_API_BASE=http://127.0.0.1:8000/v1 \
+JUDGE_MODEL=Qwen3-VL-4B-Instruct \
 API_MODEL=Qwen3-VL-4B-Instruct \
-WANDB_GROUP=c0-base \
+WANDB_GROUP=c0-base-light \
 bash scripts/autodl/12_run_light_eval.sh
 ```
 
-`c3_light` 当前包含：
+C0 full：
 
-| 测试 | 目的 | 数据/评测来源 |
-|---|---|---|
-| xLAM function calling | 函数名和参数协议 | xLAM ActionStudio 固定 seed 开发集，ToolVista 轻量 scorer |
-| MLLM Router | Router top-1 和 macro F1 | MLLM-Tool text 固定 seed 开发集，ToolVista 轻量 scorer |
-| 通用视觉保留 | 视觉、数学、综合理解和 OCR | RealWorldQA、MathVision MINI、MMMU DEV/VAL、OCRBench，经 ms-swift + VLMEvalKit |
+```bash
+CHECKPOINT=/root/autodl-tmp/model/Qwen3-VL-4B-Instruct \
+JUDGE_API_BASE=http://127.0.0.1:8000/v1 \
+JUDGE_MODEL=Qwen3-VL-4B-Instruct \
+RUN_ID=c0_base_full_seed42 \
+STAGE=c0-base-full \
+API_MODEL=Qwen3-VL-4B-Instruct \
+WANDB_GROUP=c0-base-full \
+bash scripts/autodl/13_run_full_eval.sh
+```
 
-这里的 xLAM/MLLM 数据是内部固定开发回归集，不是上游官方 leaderboard test。
+`c0_light` 到 `c4_light` 五轮使用完全相同的测试集合：
+
+| 测试 | 测试能力 | light 数据 | full 数据 | 评测来源 |
+|---|---|---|---|---|
+| xLAM function calling | JSON/schema、函数名、参数、并行调用 | 固定 200 条 | trajectory holdout 4,767 条 | xLAM ActionStudio + ToolVista scorer |
+| ToolVQA step | 图片和多步历史下的工具选择、参数、回答切换 | 官方 GTA 前 100 条 | 官方 GTA 1,622 条 | ToolVQA OpenCompass `every_with_gt` + `GTABenchEvaluator` |
+| BFCL non-live | AST 函数调用、并行/多调用和无关请求拒答 | 分层固定 200 条 | 官方 v4 non-live 1,390 条 | Berkeley Function-Calling Leaderboard 官方 evaluator |
+| MLLM Router | text/image/video 的 tool ID 路由 | 固定 200 条 | prompt-group holdout 1,726 条 | MLLM-Tool + ToolVista scorer |
+| 通用视觉保留 | 现实视觉、数学、综合理解、OCR | 每集 100 条 | 上游完整默认 split | RealWorldQA、MathVision MINI、MMMU DEV/VAL、OCRBench，经 ms-swift + VLMEvalKit |
+| Visual-RFT COCO | novel-15 开放词汇检测与定位 | 200 个 query/169 张 val 图 | 2,224 个 query/1,844 张 val 图 | Visual-RFT 候选图、COCO val2017、上游 `CocoDetectionEvaluator` |
+
+light 用于五轮 checkpoint 内部同口径比较；full 用于 C0 建档和 C4 最终复测。xLAM/MLLM 是内部固定 holdout，不是上游 leaderboard test。Visual-RFT 测试来自 COCO val2017，与 6,000 条 COCO-base65 RL 训练集分离。
 
 ## 5. 串行 SFT
 
@@ -147,6 +196,12 @@ SEED=42 \
 WANDB_PROJECT=toolvista-qwen3vl \
 bash scripts/autodl/05_train_xlam_sft.sh
 ```
+
+按当前 Qwen3-VL/Hermes 模板对 186,592 条正式 xLAM 全量精确编码：
+最大 6,877 token，1,303 条（0.698%）超过默认 `MAX_LENGTH=4096`。
+ms-swift 默认 `truncation_strategy=delete`，这些极端长 trajectory 会被删除；
+99% 样本不超过 3,833 token。为控制单卡显存，本轮保留 4,096 作为固定口径，
+四阶段不要单独改变该值。
 
 1 step smoke：
 
@@ -188,7 +243,7 @@ data/exports/msswift_sft/toolvqa_replay_train.report.json
 
 ### 5.3 C3 MLLM Router + ToolVQA/xLAM replay
 
-C3 保留全部 MLLM-Tool text，并按默认 60/20/20 混入 ToolVQA 和 xLAM：
+C3 保留 MLLM-Tool text/image/video 无泄漏 Router 训练集，并按默认 60/20/20 混入 ToolVQA 和 xLAM：
 
 ```bash
 C2_CHECKPOINT=/root/autodl-tmp/ToolVista/outputs/c2_toolvqa_replay_sft/checkpoint-XXX \
@@ -211,13 +266,25 @@ find outputs/c3_mllm_router_replay_sft -maxdepth 1 -type d -name 'checkpoint-*' 
 
 ## 6. 每阶段轻量回测
 
-先停止旧的 `swift deploy`，再部署当前 checkpoint。以 C3 为例：
+先应用并检查当前 ms-swift 4.5.0.dev0 的 VLMEvalKit candidate alias 兼容补丁：
+
+```bash
+cd /root/autodl-tmp/ToolVista
+PYTHON_BIN=/root/autodl-tmp/venvs/toolvista/bin/python \
+bash scripts/autodl/patch_msswift_vlmeval.sh
+```
+
+先停止旧的 `swift deploy`，再部署当前 checkpoint。候选 adapter 必须用命名映射
+`alias=/path/to/checkpoint` 部署；`API_MODEL` 必须等于该 alias。否则请求会命中基座，
+而不是 LoRA。以 C3 为例：
 
 ```bash
 C3_CHECKPOINT=/root/autodl-tmp/ToolVista/outputs/c3_mllm_router_replay_sft/checkpoint-XXX
+CANDIDATE_ALIAS=$(basename "$C3_CHECKPOINT")
+
 swift deploy \
   --model /root/autodl-tmp/model/Qwen3-VL-4B-Instruct \
-  --adapters "$C3_CHECKPOINT" \
+  --adapters "$CANDIDATE_ALIAS=$C3_CHECKPOINT" \
   --infer_backend vllm \
   --host 0.0.0.0 \
   --port 8000
@@ -230,18 +297,41 @@ CHECKPOINT="$C3_CHECKPOINT" \
 RUN_ID=c3_router_seed42 \
 STAGE=c3-router-replay \
 SUITE=c3_light \
-API_MODEL=Qwen3-VL-4B-Instruct \
-BASELINE_SUMMARY=/root/autodl-tmp/ToolVista/runs/c0_base_seed42/summary.json \
+API_BASE=http://127.0.0.1:8000/v1 \
+API_MODEL="$CANDIDATE_ALIAS" \
+JUDGE_API_BASE=http://127.0.0.1:8000/v1 \
+JUDGE_MODEL=Qwen3-VL-4B-Instruct \
+BASELINE_SUMMARY=/root/autodl-tmp/ToolVista/runs/c0_base_light_seed42/summary.json \
 HISTORY_SUMMARY=/root/autodl-tmp/ToolVista/runs/c2_toolvqa_seed42/summary.json \
 WANDB_GROUP=c3-router-replay \
 bash scripts/autodl/12_run_light_eval.sh
 ```
 
-C1 建议用 `SUITE=c1_light`；C2/C3 和四个 RL 分支用 `SUITE=c3_light`。ToolVQA 官方 step/e2e 目前仍由独立的 `scripts/evaluate_toolvqa.py` 调上游 OpenCompass，命令见 `docs/phase2_toolvqa_evaluation_usage.md`。
+候选模型路由由 `API_BASE + API_MODEL` 决定，C0-C4 随 checkpoint 改变；裁判路由由
+`JUDGE_API_BASE + JUDGE_MODEL` 决定，五轮必须冻结。默认内部 A/B 使用基座
+`Qwen3-VL-4B-Instruct` 作为固定本地 judge。MathVision MINI 分数必须标记为
+fixed local Qwen judge，不能与官方 GPT-4o-mini leaderboard 分数直接比较。
+
+当前 EvalScope 1.9.0 会有损解析带下划线的数据集名。ToolVista 因此从 VLMEvalKit 原始
+artifact 严格读取 RealWorldQA Overall、MathVision Overall acc、OCRBench Final Score；
+MMMU DEV/VAL 按实际被测样本的逐样本 `hit` 计算联合 micro accuracy。缺任一主指标时
+整项失败，不会生成残缺的可比较 summary。
+
+五轮必须显式使用对应 suite：C0=`c0_light`、C1=`c1_light`、C2=`c2_light`、
+C3=`c3_light`、四个 RL 分支分别使用 `c4_light`。这些 light suite 内容完全相同。
+ToolVQA step 和 Visual-RFT COCO 由统一 runner 调上游 evaluator；ToolVQA e2e 仍使用
+独立 `scripts/evaluate_toolvqa.py`，因为它额外要求 AgentLego 工具服务。
+
+`BASELINE_SUMMARY` 和 `HISTORY_SUMMARY` 必须来自相同 profile。light 只能和 C0
+light 比较，不能把 `c0_full` summary 当 light baseline。
 
 ## 7. 导出 Visual-RFT RL 数据
 
-默认 reward 为 `visual_rft format`。`visual_rft` 是一个精简的任务路由插件：classification/VQA 类任务复用 Visual-RFT 上游的 `<answer>` 归一化字符串匹配，grounding/detection 类任务使用 IoU；`format` 直接复用 ms-swift 内置的 `<think>...<answer>...` 格式奖励。因此仓库中的 aircraft classification 示例可用于验证 1 step RL，但正式 A/B 仍应使用同一份真实 Visual-RFT 数据。
+默认 reward 为 `visual_rft format`。`visual_rft` 是一个精简的任务路由插件：classification/VQA 类任务复用 Visual-RFT 上游的 `<answer>` 归一化字符串匹配，grounding/detection 类任务使用 IoU；`format` 直接复用 ms-swift 内置的 `<think>...<answer>...` 格式奖励。因此仓库中的 aircraft classification 示例可用于验证 1 step RL，但正式 A/B 默认使用已经导出的 6,000 条 COCO-base65 数据：
+
+```text
+data/exports/msswift_grpo/visual_rft_coco_base65_train.jsonl
+```
 
 以真实 Visual-RFT grounding 数据为例：
 
@@ -268,7 +358,7 @@ python scripts/validate_visual_rft_rl_dataset.py \
 
 ```bash
 export C3_CHECKPOINT=/root/autodl-tmp/ToolVista/outputs/c3_mllm_router_replay_sft/checkpoint-XXX
-export DATASET=/root/autodl-tmp/ToolVista/data/exports/msswift_grpo/visual_rft_train.jsonl
+export DATASET=/root/autodl-tmp/ToolVista/data/exports/msswift_grpo/visual_rft_coco_base65_train.jsonl
 export SEED=42
 export WANDB_PROJECT=toolvista-qwen3vl
 
@@ -313,6 +403,36 @@ bash scripts/autodl/08_train_visual_rft_grpo.sh
 RL 默认 `MAX_LENGTH=4096`、`VLLM_MAX_MODEL_LEN=4096`、`VLLM_GPU_MEMORY_UTILIZATION=0.4`，并开启 ms-swift 的 model/optimizer offload，优先保证单卡 smoke 能启动。显存足够时可以显式增大 context 或关闭 offload；四个 A/B 分支必须使用相同覆盖值。
 
 RL 重点指标由 ms-swift 直接发到 W&B：总 reward、`VisualRFTORM` 与 `Format` 均值/标准差、`reward_std`、零方差 group 比例、completion 长度、KL、clip ratio、entropy 和 rollout/off-policy 指标。
+
+四个 RL checkpoint 都要各自用命名 alias 部署后运行 C4 light，不能只测最后完成的分支：
+
+```bash
+CHECKPOINT=/root/autodl-tmp/ToolVista/outputs/rl/grpo_seed42/checkpoint-XXX
+CANDIDATE_ALIAS=$(basename "$CHECKPOINT")
+
+# 部署终端：
+swift deploy \
+  --model /root/autodl-tmp/model/Qwen3-VL-4B-Instruct \
+  --adapters "$CANDIDATE_ALIAS=$CHECKPOINT" \
+  --infer_backend vllm \
+  --host 0.0.0.0 \
+  --port 8000
+
+# 评测终端：
+CHECKPOINT="$CHECKPOINT" \
+RUN_ID=c4_grpo_light_seed42 \
+STAGE=c4-grpo \
+ALGORITHM=grpo \
+SUITE=c4_light \
+API_MODEL="$CANDIDATE_ALIAS" \
+JUDGE_API_BASE=http://127.0.0.1:8000/v1 \
+JUDGE_MODEL=Qwen3-VL-4B-Instruct \
+BASELINE_SUMMARY=/root/autodl-tmp/ToolVista/runs/c0_base_light_seed42/summary.json \
+HISTORY_SUMMARY=/root/autodl-tmp/ToolVista/runs/c3_router_seed42/summary.json \
+bash scripts/autodl/12_run_light_eval.sh
+```
+
+BNPO、DAPO、DrGRPO 使用各自 checkpoint 和唯一 RUN_ID 重复同一命令。选出最终分支后，再用 `SUITE=c4_full` 运行完整复测。
 
 ## 9. 本地合同测试和 AutoDL GPU smoke
 

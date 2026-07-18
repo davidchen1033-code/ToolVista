@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOLVISTA_ROOT="${TOOLVISTA_ROOT:-/root/autodl-tmp/ToolVista}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/venvs/toolvista/bin/python}"
 C1_CHECKPOINT="${C1_CHECKPOINT:?Set C1_CHECKPOINT to the completed C1 checkpoint-* directory}"
 TOOLVQA_DATASET="${TOOLVQA_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/toolvqa_train.jsonl}"
 XLAM_DATASET="${XLAM_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/xlam_train.jsonl}"

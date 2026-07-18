@@ -14,7 +14,10 @@ GRAD_ACC="${GRAD_ACC:-16}"
 EPOCHS="${EPOCHS:-1}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
+PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/venvs/toolvista/bin/python}"
+SWIFT_BIN="${SWIFT_BIN:-/root/autodl-tmp/venvs/toolvista/bin/swift}"
+export HF_HOME="${HF_HOME:-/root/autodl-tmp/cache/huggingface}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 test -d "${MS_SWIFT_ROOT}"
 test -e "${MODEL}"
@@ -27,11 +30,11 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export PYTHONPATH="${MS_SWIFT_ROOT}:${PYTHONPATH:-}"
 
 cd "${TOOLVISTA_ROOT}"
-python scripts/validate_ms_swift_dataset.py "${DATASET}" --max-rows 100
+"${PYTHON_BIN}" scripts/validate_ms_swift_dataset.py "${DATASET}" --max-rows 100
 
 cd "${MS_SWIFT_ROOT}"
 
-swift sft \
+"${SWIFT_BIN}" sft \
   --model "${MODEL}" \
   --dataset "${DATASET}" \
   --agent_template hermes \

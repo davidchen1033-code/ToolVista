@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -19,6 +20,7 @@ from toolvista.evaluation.io import (
     load_json,
     load_jsonl,
     normalize_swift_metrics,
+    normalize_vlmevalkit_artifact_metrics,
     read_last_swift_eval_report,
     write_json,
     write_jsonl,
@@ -31,6 +33,79 @@ PredictionClient = Callable[..., Mapping[str, Any]]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _chat_completions_endpoint(api_base: str) -> str:
+    base = api_base.rstrip("/")
+    return base if base.endswith("/chat/completions") else base + "/chat/completions"
+
+
+def _swift_subprocess_environment(
+    *,
+    judge_api_base: str | None = None,
+    judge_model: str | None = None,
+) -> dict[str, str]:
+    """Route VLMEvalKit LLM-as-judge scoring through one fixed endpoint."""
+    environment = os.environ.copy()
+    if bool(judge_api_base) != bool(judge_model):
+        raise ValueError("Set both judge_api_base and judge_model, or neither.")
+    if judge_api_base and judge_model:
+        environment["OPENAI_API_KEY"] = "EMPTY"
+        environment["OPENAI_API_BASE"] = _chat_completions_endpoint(judge_api_base)
+        environment["LOCAL_LLM"] = judge_model
+        return environment
+    openai_key = environment.get("OPENAI_API_KEY")
+    if openai_key is not None and openai_key.strip().upper() in {"", "EMPTY"}:
+        environment.pop("OPENAI_API_KEY", None)
+    return environment
+
+
+def _openai_multimodal_messages(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    messages = row.get("messages", [])
+    if not isinstance(messages, list):
+        raise ValueError("Evaluation row messages must be a list.")
+    media = {
+        "image": iter(row.get("images", [])),
+        "video": iter(row.get("videos", [])),
+        "audio": iter(row.get("audios", [])),
+    }
+    tags = {"<image>": "image", "<video>": "video", "<audio>": "audio"}
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        output = dict(message)
+        content = output.get("content")
+        if not isinstance(content, str) or not any(tag in content for tag in tags):
+            converted.append(output)
+            continue
+        parts: list[dict[str, Any]] = []
+        cursor = 0
+        while cursor < len(content):
+            matches = [(content.find(tag, cursor), tag) for tag in tags]
+            matches = [(index, tag) for index, tag in matches if index >= 0]
+            if not matches:
+                if content[cursor:]:
+                    parts.append({"type": "text", "text": content[cursor:]})
+                break
+            index, tag = min(matches)
+            if index > cursor:
+                parts.append({"type": "text", "text": content[cursor:index]})
+            modality = tags[tag]
+            try:
+                path = next(media[modality])
+            except StopIteration as exc:
+                raise ValueError(f"Missing media path for {tag} in evaluation row.") from exc
+            url_key = f"{modality}_url"
+            parts.append({"type": url_key, url_key: {"url": str(path)}})
+            cursor = index + len(tag)
+        output["content"] = parts
+        converted.append(output)
+    for modality, values in media.items():
+        try:
+            extra = next(values)
+        except StopIteration:
+            continue
+        raise ValueError(f"Unreferenced {modality} media path in evaluation row: {extra}")
+    return converted
+
+
 def call_chat_completion(
     *,
     api_base: str,
@@ -40,7 +115,7 @@ def call_chat_completion(
     timeout: float,
 ) -> Mapping[str, Any]:
     """Call one OpenAI-compatible completion, retrying one transport failure."""
-    endpoint = api_base.rstrip("/") + "/chat/completions"
+    endpoint = _chat_completions_endpoint(api_base)
     payload: dict[str, Any] = {
         "model": model,
         "messages": list(messages),
@@ -61,8 +136,15 @@ def call_chat_completion(
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 value = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError:
-            raise
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            message = f"HTTP {exc.code}: {exc.reason}"
+            if detail:
+                message += f": {detail}"
+            raise RuntimeError(message) from exc
         except (urllib.error.URLError, TimeoutError):
             if attempt == 0:
                 time.sleep(0.5)
@@ -112,10 +194,15 @@ def predict_native_rows(
     for row in rows:
         output = dict(row)
         try:
+            messages = (
+                _openai_multimodal_messages(row)
+                if spec.execution == "native_mllm_router"
+                else row.get("messages", [])
+            )
             response = prediction_client(
                 api_base=api_base,
                 model=api_model,
-                messages=row.get("messages", []),
+                messages=messages,
                 tools=row.get("tools", []),
                 timeout=timeout,
             )
@@ -278,6 +365,7 @@ def build_swift_eval_command(
     eval_output_dir: Path,
     infer_backend: str,
     eval_url: str | None,
+    served_model_name: str | None = None,
     swift_executable: str,
 ) -> list[str]:
     """Build the argv passed directly to ms-swift's upstream evaluator."""
@@ -312,6 +400,8 @@ def build_swift_eval_command(
             '{"max_tokens":512,"temperature":0}',
         ]
     )
+    if served_model_name:
+        command.extend(["--served_model_name", served_model_name])
     if eval_url:
         command.extend(["--eval_url", eval_url])
     return command
@@ -372,6 +462,36 @@ def _read_swift_report(
     raise ValueError(f"Could not find matching swift eval report: {errors}")
 
 
+def _vlmeval_run_dirs(eval_output_dir: Path) -> set[Path]:
+    root = eval_output_dir / "vlmeval"
+    if not root.is_dir():
+        return set()
+    return {path.resolve() for path in root.iterdir() if path.is_dir()}
+
+
+def _new_vlmeval_run_dir(eval_output_dir: Path, *, previous: set[Path]) -> Path:
+    created = sorted(_vlmeval_run_dirs(eval_output_dir) - previous)
+    if len(created) != 1:
+        raise ValueError(
+            f"Expected exactly one new VLMEvalKit timestamp directory in "
+            f"{eval_output_dir / 'vlmeval'}, found {len(created)}."
+        )
+    return created[0]
+
+
+def _check_fixed_judge(*, api_base: str, model: str, timeout: float = 15.0) -> None:
+    response = call_chat_completion(
+        api_base=api_base,
+        model=model,
+        messages=[{"role": "user", "content": "Reply with OK."}],
+        tools=[],
+        timeout=timeout,
+    )
+    message = _assistant_message(response)
+    if not str(message.get("content") or "").strip():
+        raise ValueError("Fixed judge health check returned empty content.")
+
+
 def run_swift_benchmark(
     spec: BenchmarkSpec,
     *,
@@ -380,15 +500,28 @@ def run_swift_benchmark(
     benchmark_dir: Path,
     infer_backend: str,
     eval_url: str | None,
+    api_model: str | None = None,
+    judge_api_base: str | None = None,
+    judge_model: str | None = None,
     resume: bool,
     swift_executable: str = "swift",
     command_runner: CommandRunner = subprocess.run,
 ) -> EvaluationResult:
     """Run ms-swift/VLMEvalKit and wrap its unmodified report and logs."""
+    if "MathVision_MINI" in spec.swift_datasets and not (
+        judge_api_base and judge_model
+    ):
+        raise ValueError(
+            "MathVision_MINI requires a fixed LLM judge. Set both "
+            "--judge-api-base and --judge-model; do not use the evaluated candidate "
+            "as a changing judge across C0-C4."
+        )
     benchmark_dir.mkdir(parents=True, exist_ok=True)
     result_path = benchmark_dir / "result.json"
     if resume and result_path.is_file():
-        return EvaluationResult.from_dict(load_json(result_path))
+        resumed = EvaluationResult.from_dict(load_json(result_path))
+        if resumed.status == "passed":
+            return resumed
     if result_path.is_file():
         result_path.unlink()
 
@@ -400,6 +533,7 @@ def run_swift_benchmark(
         eval_output_dir=eval_output_dir,
         infer_backend=infer_backend,
         eval_url=eval_url,
+        served_model_name=api_model,
         swift_executable=swift_executable,
     )
     stdout_path = benchmark_dir / "stdout.log"
@@ -415,6 +549,10 @@ def run_swift_benchmark(
 
     start = time.perf_counter()
     previous_row_counts = _swift_result_row_counts(resolved_checkpoint, benchmark_dir)
+    previous_vlmeval_dirs = _vlmeval_run_dirs(eval_output_dir)
+    if "MathVision_MINI" in spec.swift_datasets:
+        assert judge_api_base is not None and judge_model is not None
+        _check_fixed_judge(api_base=judge_api_base, model=judge_model)
     launch_error: Exception | None = None
     completed_process: subprocess.CompletedProcess[str] | None = None
     try:
@@ -424,6 +562,10 @@ def run_swift_benchmark(
             capture_output=True,
             text=True,
             check=False,
+            env=_swift_subprocess_environment(
+                judge_api_base=judge_api_base,
+                judge_model=judge_model,
+            ),
         )
     except Exception as exc:
         launch_error = exc
@@ -457,8 +599,38 @@ def run_swift_benchmark(
                 metric_scales=spec.metric_scales,
             )
             missing_metrics = [metric for metric in spec.primary_metrics if metric not in metrics]
+            if missing_metrics and str(spec.eval_backend) == "VLMEvalKit":
+                try:
+                    vlmeval_run_dir = _new_vlmeval_run_dir(
+                        eval_output_dir,
+                        previous=previous_vlmeval_dirs,
+                    )
+                    upstream_metrics, metrics, raw_artifacts = (
+                        normalize_vlmevalkit_artifact_metrics(
+                            vlmeval_run_dir,
+                            datasets=spec.swift_datasets,
+                        )
+                    )
+                    artifacts.update(raw_artifacts)
+                    missing_metrics = [
+                        metric for metric in spec.primary_metrics if metric not in metrics
+                    ]
+                except Exception as artifact_exc:
+                    raise ValueError(
+                        f"swift eval report is missing primary metrics: {missing_metrics}; "
+                        f"VLMEvalKit artifact fallback failed: "
+                        f"{type(artifact_exc).__name__}: {artifact_exc}"
+                    ) from artifact_exc
             if missing_metrics:
                 raise ValueError(f"swift eval report is missing primary metrics: {missing_metrics}")
+            write_json(
+                upstream_path,
+                {
+                    **report,
+                    "toolvista_upstream_metrics": upstream_metrics,
+                    "toolvista_metrics": metrics,
+                },
+            )
         except Exception as exc:
             status = "failed"
             upstream_metrics = {}
@@ -467,7 +639,7 @@ def run_swift_benchmark(
             with stderr_path.open("a", encoding="utf-8") as handle:
                 handle.write(f"{separator}{type(exc).__name__}: {exc}\n")
 
-    planned = (spec.eval_limit or 0) * len(spec.swift_datasets)
+    planned = spec.eval_limit * len(spec.swift_datasets) if spec.eval_limit is not None else None
     process_exit_code = completed_process.returncode if completed_process is not None else None
     benchmark_exit_code = 0 if status == "passed" else process_exit_code or 1
     result = EvaluationResult(
@@ -490,8 +662,8 @@ def run_swift_benchmark(
         ),
         status=status,  # type: ignore[arg-type]
         attempted=planned,
-        completed=planned if status == "passed" else 0,
-        failed=0 if status == "passed" else planned,
+        completed=planned if planned is not None and status == "passed" else (0 if planned is not None else None),
+        failed=0 if planned is not None and status == "passed" else planned,
         upstream_metrics=upstream_metrics,
         metrics=metrics,
         runtime={
@@ -641,6 +813,25 @@ def _validate_suite_specs(specs: Sequence[BenchmarkSpec]) -> None:
             metric_owners[metric_name] = spec.benchmark_id
 
 
+def _validate_judge_configuration(
+    specs: Sequence[BenchmarkSpec],
+    *,
+    judge_api_base: str | None,
+    judge_model: str | None,
+) -> None:
+    if bool(judge_api_base) != bool(judge_model):
+        raise ValueError("Set both judge_api_base and judge_model, or neither.")
+    requires_judge = any(
+        spec.execution == "swift_eval" and "MathVision_MINI" in spec.swift_datasets
+        for spec in specs
+    )
+    if requires_judge and not judge_api_base:
+        raise ValueError(
+            "MathVision_MINI requires a fixed LLM judge. Set both "
+            "--judge-api-base and --judge-model before starting the suite."
+        )
+
+
 def _validate_result_identity(
     result: EvaluationResult,
     spec: BenchmarkSpec,
@@ -753,12 +944,22 @@ def evaluate_suite(
     seed: int,
     baseline_metrics: Mapping[str, float],
     historical_metrics: Sequence[Mapping[str, float]],
+    judge_api_base: str | None = None,
+    judge_model: str | None = None,
     swift_executable: str = "swift",
     native_runner: Callable[..., EvaluationResult] = run_native_benchmark,
     swift_runner: Callable[..., EvaluationResult] = run_swift_benchmark,
+    toolvqa_runner: Callable[..., EvaluationResult] | None = None,
+    bfcl_runner: Callable[..., EvaluationResult] | None = None,
+    visual_rft_runner: Callable[..., EvaluationResult] | None = None,
 ) -> dict[str, Any]:
     """Run a suite sequentially and write one local manifest and summary."""
     _validate_suite_specs(specs)
+    _validate_judge_configuration(
+        specs,
+        judge_api_base=judge_api_base,
+        judge_model=judge_model,
+    )
     run_dir = runs_root / run_id
     eval_dir = run_dir / "eval"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -789,11 +990,66 @@ def evaluate_suite(
                     resume=resume,
                     display_command=display_command,
                 )
-            else:
+            elif spec.execution == "toolvqa_step":
+                if toolvqa_runner is None:
+                    from toolvista.evaluation.toolvqa_benchmark import run_toolvqa_benchmark
+
+                    selected_toolvqa_runner = run_toolvqa_benchmark
+                else:
+                    selected_toolvqa_runner = toolvqa_runner
+                result = selected_toolvqa_runner(
+                    spec,
+                    checkpoint=checkpoint,
+                    run_id=run_id,
+                    benchmark_dir=benchmark_dir,
+                    api_base=api_base,
+                    api_model=api_model,
+                    timeout=timeout,
+                    score_only=score_only,
+                    resume=resume,
+                    display_command=display_command,
+                )
+            elif spec.execution == "visual_rft_coco":
+                if visual_rft_runner is None:
+                    from toolvista.evaluation.visual_rft_coco import run_visual_rft_coco
+
+                    selected_visual_rft_runner = run_visual_rft_coco
+                else:
+                    selected_visual_rft_runner = visual_rft_runner
+                result = selected_visual_rft_runner(
+                    spec,
+                    checkpoint=checkpoint,
+                    run_id=run_id,
+                    benchmark_dir=benchmark_dir,
+                    api_base=api_base,
+                    api_model=api_model,
+                    timeout=timeout,
+                    score_only=score_only,
+                    resume=resume,
+                    display_command=display_command,
+                )
+            elif spec.execution == "bfcl":
+                if bfcl_runner is None:
+                    from toolvista.evaluation.bfcl import run_bfcl_benchmark
+
+                    selected_bfcl_runner = run_bfcl_benchmark
+                else:
+                    selected_bfcl_runner = bfcl_runner
+                result = selected_bfcl_runner(
+                    spec,
+                    checkpoint=checkpoint,
+                    run_id=run_id,
+                    benchmark_dir=benchmark_dir,
+                    api_base=api_base,
+                    api_model=api_model,
+                    timeout=timeout,
+                    score_only=score_only,
+                    resume=resume,
+                    display_command=display_command,
+                )
+            elif spec.execution == "swift_eval":
                 if score_only:
-                    raise ValueError(
-                        "--score-only is supported only for native specialty benchmarks in Phase 1."
-                    )
+                    raise ValueError("--score-only is not supported for swift eval benchmarks.")
                 result = swift_runner(
                     spec,
                     checkpoint=checkpoint,
@@ -801,9 +1057,14 @@ def evaluate_suite(
                     benchmark_dir=benchmark_dir,
                     infer_backend=infer_backend,
                     eval_url=eval_url,
+                    api_model=api_model,
+                    judge_api_base=judge_api_base,
+                    judge_model=judge_model,
                     resume=resume,
                     swift_executable=swift_executable,
                 )
+            else:
+                raise ValueError(f"Unsupported benchmark execution: {spec.execution}")
             _validate_result_identity(
                 result,
                 spec,
@@ -863,6 +1124,11 @@ def evaluate_suite(
             "tool_order": "frozen manifest order",
             "stop_words": [],
             "reasoning_visibility": "upstream default",
+        },
+        "evaluator": {
+            "judge_api_base": _safe_endpoint(judge_api_base),
+            "judge_model": judge_model,
+            "policy": "fixed_across_c0_c4",
         },
         "start_time": start_time.isoformat(),
         "end_time": end_time.isoformat(),

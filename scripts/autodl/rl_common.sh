@@ -5,13 +5,13 @@ TOOLVISTA_ROOT="${TOOLVISTA_ROOT:-/root/autodl-tmp/ToolVista}"
 MS_SWIFT_ROOT="${MS_SWIFT_ROOT:-/root/autodl-tmp/ms-swift}"
 BASE_MODEL="${BASE_MODEL:-/root/autodl-tmp/model/Qwen3-VL-4B-Instruct}"
 C3_CHECKPOINT="${C3_CHECKPOINT:?Set C3_CHECKPOINT to the completed C3 SFT checkpoint-* directory}"
-DATASET="${DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_grpo/visual_rft_train.jsonl}"
+DATASET="${DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_grpo/visual_rft_coco_base65_train.jsonl}"
 REWARD_PLUGIN="${REWARD_PLUGIN:-${TOOLVISTA_ROOT}/toolvista/rewards/visual_rft.py}"
 LOSS_TYPE="${LOSS_TYPE:?LOSS_TYPE must be set by the RL branch launcher}"
 OUTPUT_DIR="${OUTPUT_DIR:?OUTPUT_DIR must be set by the RL branch launcher}"
 STAGE="${STAGE:?STAGE must be set by the RL branch launcher}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
-SWIFT_BIN="${SWIFT_BIN:-swift}"
+PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/venvs/toolvista/bin/python}"
+SWIFT_BIN="${SWIFT_BIN:-/root/autodl-tmp/venvs/toolvista/bin/swift}"
 
 SEED="${SEED:-42}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
@@ -76,7 +76,8 @@ export MAX_PIXELS
 export WANDB_PROJECT
 export WANDB_NAME
 export WANDB_RUN_GROUP="${WANDB_GROUP}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
+export HF_HOME="${HF_HOME:-/root/autodl-tmp/cache/huggingface}"
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export PYTHONPATH="${MS_SWIFT_ROOT}:${TOOLVISTA_ROOT}:${PYTHONPATH:-}"
 

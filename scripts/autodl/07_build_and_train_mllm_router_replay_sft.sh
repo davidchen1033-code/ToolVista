@@ -2,9 +2,9 @@
 set -euo pipefail
 
 TOOLVISTA_ROOT="${TOOLVISTA_ROOT:-/root/autodl-tmp/ToolVista}"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/venvs/toolvista/bin/python}"
 C2_CHECKPOINT="${C2_CHECKPOINT:?Set C2_CHECKPOINT to the completed C2 checkpoint-* directory}"
-MLLM_DATASET="${MLLM_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/mllm_tool_text_train.jsonl}"
+MLLM_DATASET="${MLLM_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/mllm_tool_router_train.jsonl}"
 TOOLVQA_DATASET="${TOOLVQA_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/toolvqa_train.jsonl}"
 XLAM_DATASET="${XLAM_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/xlam_train.jsonl}"
 REPLAY_DATASET="${REPLAY_DATASET:-${TOOLVISTA_ROOT}/data/exports/msswift_sft/mllm_router_replay_train.jsonl}"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import shlex
 import shutil
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from toolvista.evaluation.io import load_json, load_jsonl, write_jsonl
 from toolvista.evaluation.models import BenchmarkSpec, EvaluationResult, TestSummary
 from toolvista.evaluation.runner import (
+    _swift_subprocess_environment,
     build_swift_eval_command,
     calculate_comparisons,
     call_chat_completion,
@@ -79,6 +81,26 @@ def swift_spec() -> BenchmarkSpec:
             "eval_limit": 10,
             "swift_datasets": ["RealWorldQA", "OCRBench"],
             "metric_scales": {"RealWorldQA/acc": 0.01},
+        },
+    )
+
+
+def mathvision_swift_spec() -> BenchmarkSpec:
+    return BenchmarkSpec.from_mapping(
+        "mathvision_light",
+        {
+            "execution": "swift_eval",
+            "profile": "light",
+            "method": "VLMEvalKit",
+            "source_project": "VLMEvalKit",
+            "dataset_name": "MathVision MINI",
+            "split": "mini",
+            "evaluator": "VLMEvalKit fixed judge",
+            "primary_metrics": ["vlmevalkit/mathvision_mini/accuracy"],
+            "metric_directions": {"vlmevalkit/mathvision_mini/accuracy": "maximize"},
+            "eval_backend": "VLMEvalKit",
+            "eval_limit": 10,
+            "swift_datasets": ["MathVision_MINI"],
         },
     )
 
@@ -280,6 +302,54 @@ class NativeEvaluationRunnerTest(_TemporaryDirectoryTestCase):
         stored = load_jsonl(root / "run/eval/mllm_router/predictions.jsonl")
         self.assertEqual(stored[0]["prediction"], "route_a")
 
+    def test_mllm_router_converts_manifest_media_to_openai_content_parts(self) -> None:
+        root = self.make_temp_dir()
+        image = root / "sample.jpg"
+        image.write_bytes(b"image")
+        manifest = root / "mllm_router.jsonl"
+        write_jsonl(
+            manifest,
+            [
+                {
+                    "sample_id": "m-image",
+                    "messages": [{"role": "user", "content": "<image>Route this request"}],
+                    "images": [image.as_posix()],
+                    "tools": [],
+                    "input_modality": "image",
+                    "target_tools": ["route_a"],
+                    "router_catalog": ["route_a"],
+                }
+            ],
+        )
+        requests: list[dict[str, object]] = []
+
+        def fake_client(**kwargs: object) -> dict[str, object]:
+            requests.append(kwargs)
+            return {"choices": [{"message": {"content": "route_a"}}]}
+
+        run_native_benchmark(
+            mllm_router_spec(manifest),
+            checkpoint="checkpoint",
+            run_id="run",
+            benchmark_dir=root / "run/eval/mllm_router",
+            api_base="http://127.0.0.1:8000/v1",
+            api_model="checkpoint",
+            timeout=10.0,
+            score_only=False,
+            resume=False,
+            display_command="python scripts/evaluate.py --benchmark mllm_router",
+            prediction_client=fake_client,
+        )
+
+        messages = requests[0]["messages"]
+        self.assertEqual(
+            messages[0]["content"],
+            [
+                {"type": "image_url", "image_url": {"url": image.as_posix()}},
+                {"type": "text", "text": "Route this request"},
+            ],
+        )
+
     def test_malformed_model_response_is_recorded_without_retry(self) -> None:
         root = self.make_temp_dir()
         manifest = root / "xlam.jsonl"
@@ -472,6 +542,82 @@ class NativeEvaluationRunnerTest(_TemporaryDirectoryTestCase):
 
 
 class SwiftEvaluationRunnerTest(_TemporaryDirectoryTestCase):
+    def test_swift_environment_drops_only_placeholder_openai_keys(self) -> None:
+        for placeholder in ("", "EMPTY", " empty "):
+            with self.subTest(placeholder=placeholder):
+                with patch.dict("os.environ", {"OPENAI_API_KEY": placeholder}, clear=False):
+                    environment = _swift_subprocess_environment()
+                self.assertNotIn("OPENAI_API_KEY", environment)
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-real-key"}, clear=False):
+            environment = _swift_subprocess_environment()
+        self.assertEqual(environment["OPENAI_API_KEY"], "sk-real-key")
+
+        with patch.dict("os.environ", {}, clear=True):
+            environment = _swift_subprocess_environment(
+                judge_api_base="http://127.0.0.1:8000/v1/",
+                judge_model="Qwen3-VL-4B-Instruct",
+            )
+        self.assertEqual(environment["OPENAI_API_KEY"], "EMPTY")
+        self.assertEqual(
+            environment["OPENAI_API_BASE"],
+            "http://127.0.0.1:8000/v1/chat/completions",
+        )
+        self.assertEqual(environment["LOCAL_LLM"], "Qwen3-VL-4B-Instruct")
+
+        with self.assertRaisesRegex(ValueError, "both judge_api_base and judge_model"):
+            _swift_subprocess_environment(judge_api_base="http://127.0.0.1:8000/v1")
+
+    def test_full_swift_eval_reports_unknown_counts_instead_of_zero(self) -> None:
+        root = self.make_temp_dir()
+        checkpoint = root / "checkpoint"
+        checkpoint.mkdir()
+        benchmark_dir = root / "run/eval/qwen3vl_general_full"
+        eval_output_dir = (benchmark_dir / "swift_eval").resolve()
+        spec = BenchmarkSpec.from_mapping(
+            "qwen3vl_general_full",
+            {
+                "execution": "swift_eval",
+                "profile": "full",
+                "method": "swift eval",
+                "source_project": "ms-swift",
+                "dataset_name": "RealWorldQA",
+                "split": "full",
+                "evaluator": "VLMEvalKit",
+                "primary_metrics": ["vlmevalkit/realworldqa/acc"],
+                "metric_directions": {"vlmevalkit/realworldqa/acc": "maximize"},
+                "eval_backend": "VLMEvalKit",
+                "swift_datasets": ["RealWorldQA"],
+                "metric_scales": {"RealWorldQA/acc": 0.01},
+            },
+        )
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            del kwargs
+            write_jsonl(
+                checkpoint / "eval_result.jsonl",
+                [{
+                    "VLMEvalKit": {"RealWorldQA": {"acc": 50.0}},
+                    "eval_output_dir": eval_output_dir.as_posix(),
+                }],
+            )
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        result = run_swift_benchmark(
+            spec,
+            checkpoint=checkpoint.as_posix(),
+            run_id="run",
+            benchmark_dir=benchmark_dir,
+            infer_backend="vllm",
+            eval_url=None,
+            resume=False,
+            command_runner=fake_run,
+        )
+
+        self.assertEqual(result.status, "passed")
+        self.assertIsNone(result.test_summary.sample_count)
+        self.assertEqual((result.attempted, result.completed, result.failed), (None, None, None))
+
     def test_command_uses_upstream_swift_eval_flags(self) -> None:
         command = build_swift_eval_command(
             swift_spec(),
@@ -495,6 +641,20 @@ class SwiftEvaluationRunnerTest(_TemporaryDirectoryTestCase):
             '{"max_tokens":512,"temperature":0}',
         )
         self.assertEqual(command[command.index("--eval_url") + 1], "http://127.0.0.1:8000/v1")
+
+        candidate_command = build_swift_eval_command(
+            swift_spec(),
+            checkpoint="base-model",
+            eval_output_dir=Path("swift_eval"),
+            infer_backend="vllm",
+            eval_url="http://127.0.0.1:8000/v1",
+            served_model_name="c1-candidate",
+            swift_executable="swift",
+        )
+        self.assertEqual(
+            candidate_command[candidate_command.index("--served_model_name") + 1],
+            "c1-candidate",
+        )
 
     def test_command_rejects_non_swift_spec(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid swift eval benchmark"):
@@ -1073,8 +1233,122 @@ class SwiftEvaluationRunnerTest(_TemporaryDirectoryTestCase):
 
         self.assertEqual(resumed.to_dict(), first.to_dict())
 
+    def test_resume_reruns_failed_swift_result(self) -> None:
+        root = self.make_temp_dir()
+        benchmark_dir = root / "run/eval/qwen3vl_general_light"
+
+        failed = run_swift_benchmark(
+            swift_spec(),
+            checkpoint="checkpoint",
+            run_id="run",
+            benchmark_dir=benchmark_dir,
+            infer_backend="vllm",
+            eval_url=None,
+            resume=False,
+            command_runner=lambda command, **kwargs: subprocess.CompletedProcess(
+                command, 2, stdout="", stderr="failed"
+            ),
+        )
+        self.assertEqual(failed.status, "failed")
+        reran = False
+
+        def rerun(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            nonlocal reran
+            del kwargs
+            reran = True
+            return subprocess.CompletedProcess(command, 2, stdout="", stderr="failed again")
+
+        resumed = run_swift_benchmark(
+            swift_spec(),
+            checkpoint="checkpoint",
+            run_id="run",
+            benchmark_dir=benchmark_dir,
+            infer_backend="vllm",
+            eval_url=None,
+            resume=True,
+            command_runner=rerun,
+        )
+        self.assertTrue(reran)
+        self.assertEqual(resumed.status, "failed")
+
+
 
 class EvaluationSummaryTest(_TemporaryDirectoryTestCase):
+
+    def test_mathvision_suite_requires_complete_fixed_judge_pair(self) -> None:
+        common = {
+            "checkpoint": "checkpoint",
+            "run_id": "run",
+            "runs_root": self.make_temp_dir(),
+            "api_base": "http://127.0.0.1:8000/v1",
+            "api_model": "c1-candidate",
+            "infer_backend": "vllm",
+            "eval_url": "http://127.0.0.1:8000/v1",
+            "timeout": 10.0,
+            "score_only": False,
+            "resume": False,
+            "display_command": "evaluate",
+            "stage": "c1",
+            "algorithm": None,
+            "seed": 42,
+            "baseline_metrics": {},
+            "historical_metrics": [],
+        }
+        with self.assertRaisesRegex(ValueError, "fixed LLM judge"):
+            evaluate_suite([mathvision_swift_spec()], **common)
+        with self.assertRaisesRegex(ValueError, "both judge_api_base and judge_model"):
+            evaluate_suite(
+                [mathvision_swift_spec()],
+                judge_api_base="http://127.0.0.1:8000/v1",
+                **common,
+            )
+
+    def test_candidate_and_fixed_judge_routes_are_independent(self) -> None:
+        root = self.make_temp_dir()
+        captured: dict[str, object] = {}
+
+        def fake_swift(spec: BenchmarkSpec, **kwargs: object) -> EvaluationResult:
+            captured.update(kwargs)
+            return passed_result(
+                spec.benchmark_id,
+                "vlmevalkit/mathvision_mini/accuracy",
+                0.5,
+                Path(kwargs["benchmark_dir"]),
+            )
+
+        summary = evaluate_suite(
+            [mathvision_swift_spec()],
+            checkpoint="checkpoint",
+            run_id="run",
+            runs_root=root,
+            api_base="http://127.0.0.1:8000/v1",
+            api_model="c1-candidate",
+            infer_backend="vllm",
+            eval_url="http://127.0.0.1:8000/v1",
+            judge_api_base="http://fixed-judge.example/v1?token=secret",
+            judge_model="Qwen3-VL-4B-Instruct",
+            timeout=10.0,
+            score_only=False,
+            resume=False,
+            display_command="evaluate",
+            stage="c1",
+            algorithm=None,
+            seed=42,
+            baseline_metrics={},
+            historical_metrics=[],
+            swift_runner=fake_swift,
+        )
+
+        self.assertEqual(captured["api_model"], "c1-candidate")
+        self.assertEqual(captured["judge_model"], "Qwen3-VL-4B-Instruct")
+        manifest = load_json(root / "run/manifest.json")
+        self.assertEqual(manifest["evaluator"]["judge_model"], "Qwen3-VL-4B-Instruct")
+        self.assertEqual(
+            manifest["evaluator"]["judge_api_base"],
+            "http://fixed-judge.example/v1",
+        )
+        self.assertEqual(summary["status"], "passed")
+
     def test_comparisons_report_gain_retention_and_historical_forgetting(self) -> None:
         comparisons = calculate_comparisons(
             {"xlam/function_name_accuracy": 0.72},
@@ -1365,12 +1639,15 @@ class EvaluationSummaryTest(_TemporaryDirectoryTestCase):
             eval_url="https://eval-secret@example.test", timeout=10.0, score_only=False,
             resume=False, display_command="python scripts/evaluate.py --api-key secret",
             stage="c1", algorithm=None, seed=42, baseline_metrics={}, historical_metrics=[],
+            judge_api_base="https://judge-secret@example.test/v1?token=secret",
+            judge_model="fixed-judge",
             native_runner=fake_native,
         )
         serialized = json.dumps(load_json(root / "run/manifest.json"))
         self.assertNotIn("secret-token", serialized)
         self.assertNotIn("api_key", serialized)
         self.assertNotIn("eval-secret", serialized)
+        self.assertNotIn("judge-secret", serialized)
 
     def test_wandb_upload_flattens_numeric_metrics_and_warning_is_nonfatal(self) -> None:
         class FakeRun:
@@ -1485,7 +1762,7 @@ class ChatCompletionClientTest(unittest.TestCase):
             400,
             "Bad Request",
             {},
-            None,
+            io.BytesIO(b'{"error":{"message":"maximum context length exceeded"}}'),
         )
         with (
             patch(
@@ -1494,7 +1771,10 @@ class ChatCompletionClientTest(unittest.TestCase):
             ) as urlopen,
             patch("toolvista.evaluation.runner.time.sleep") as sleep,
         ):
-            with self.assertRaises(urllib.error.HTTPError):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "HTTP 400: Bad Request:.*maximum context length exceeded",
+            ):
                 call_chat_completion(
                     api_base="http://127.0.0.1:8000/v1",
                     model="checkpoint",

@@ -1,0 +1,17 @@
+{
+  "source": "xLAM ActionStudio",
+  "seed": 42,
+  "namespace": "xlam",
+  "algorithm": "sha256-first-64-bits",
+  "eval_fraction": 0.05,
+  "train_trajectory_count": 91902,
+  "eval_trajectory_count": 4906,
+  "train_rows": 186592,
+  "full_rows": 4767,
+  "light_rows": 200,
+  "skipped": 964,
+  "heldout_non_eval_targets": 5548,
+  "overlap": {
+    "trajectory_count": 0
+  }
+}

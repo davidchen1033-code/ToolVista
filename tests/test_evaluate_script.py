@@ -87,6 +87,33 @@ class PrepareEvaluationDataTest(unittest.TestCase):
         self.assertIn(rows[0]["target_tools"][0], rows[0]["router_catalog"])
         self.assertIn("Return exactly one tool ID", rows[0]["messages"][0]["content"])
 
+    def test_mllm_preparation_merges_targets_for_duplicate_prompt(self) -> None:
+        samples = [
+            CanonicalSample(
+                sample_id=sample_id,
+                source="mllm_tool",
+                task_type="tool_selection",
+                messages=[
+                    CanonicalMessage(role="user", content=prompt),
+                    CanonicalMessage(role="assistant", content=tool_id),
+                ],
+                labels={"target_tools": [tool_id]},
+            )
+            for sample_id, prompt, tool_id in (
+                ("sample-b", "Route   This", "tool-b"),
+                ("sample-a", "route this", "tool-a"),
+            )
+        ]
+        results = [type("Result", (), {"ok": True, "sample": sample})() for sample in samples]
+        adapter = type("Adapter", (), {"iter_results": lambda self: iter(results)})()
+
+        with patch("scripts.prepare_eval_data.MLLMToolAdapter", return_value=adapter):
+            rows = prepare_mllm_router_rows(make_paths(), limit=10, seed=42)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sample_id"], "sample-a")
+        self.assertEqual(rows[0]["target_tools"], ["tool-a", "tool-b"])
+
     def test_mllm_router_excludes_samples_with_messages_after_the_assistant_target(self) -> None:
         normal = CanonicalSample(
             sample_id="normal",
@@ -542,6 +569,7 @@ class EvaluateCLITest(unittest.TestCase):
                 "--api-base",
                 "https://user:secret@example.test/v1?api_key=secret",
                 "--eval-url=https://eval-secret@example.test/v1?token=secret",
+                "--judge-api-base=https://judge-secret@example.test/v1?token=secret",
                 "--checkpoint",
                 "checkpoint",
             ]
@@ -569,7 +597,7 @@ class EvaluationDocumentationTest(unittest.TestCase):
             "swift deploy",
             "必须先停止 C1 服务",
             "python scripts/evaluate.py",
-            "c0_base_seed42",
+            "c0_base_light_seed42",
             "c1_xlam_sft_seed42_xlam_rescore",
             "--report_to wandb",
             "--log_completions true",

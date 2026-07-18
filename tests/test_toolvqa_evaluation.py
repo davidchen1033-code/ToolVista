@@ -77,6 +77,32 @@ class ToolVQAEvaluationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Ambiguous"):
             prepare_data(source, root / "ambiguous", media_root=media)
 
+    def test_prepare_data_indexes_media_tree_only_once(self) -> None:
+        root = self.make_temp_dir()
+        source = root / "source"
+        source.mkdir()
+        manifest = {
+            str(index): {
+                "tools": [{"name": "OCR"}],
+                "files": [{"type": "image", "path": f"/old/{name}"}],
+                "dialogs": [],
+                "gt_answer": [],
+            }
+            for index, name in enumerate(("a.jpg", "b.jpg"))
+        }
+        (source / "dataset.json").write_text(json.dumps(manifest), encoding="utf-8")
+        media = root / "media"
+        media.mkdir()
+        (media / "a.jpg").write_bytes(b"a")
+        (media / "b.jpg").write_bytes(b"b")
+
+        prepared, _, sample_count = prepare_data(source, root / "prepared", media_root=media)
+
+        rows = json.loads(prepared.read_text(encoding="utf-8"))
+        self.assertEqual(sample_count, 2)
+        self.assertEqual(Path(rows["0"]["files"][0]["path"]).name, "a.jpg")
+        self.assertEqual(Path(rows["1"]["files"][0]["path"]).name, "b.jpg")
+
     def test_render_runtime_config_separates_step_and_e2e(self) -> None:
         root = self.make_temp_dir()
         common = dict(

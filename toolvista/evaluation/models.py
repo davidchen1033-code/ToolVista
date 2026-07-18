@@ -7,11 +7,25 @@ from math import isfinite
 from typing import Any, Literal, Mapping, cast
 
 
-ExecutionMode = Literal["native_xlam", "native_mllm_router", "swift_eval"]
+ExecutionMode = Literal[
+    "native_xlam",
+    "native_mllm_router",
+    "toolvqa_step",
+    "bfcl",
+    "visual_rft_coco",
+    "swift_eval",
+]
 BenchmarkStatus = Literal["passed", "failed", "blocked", "skipped"]
 PredictionMode = Literal["fresh", "score_only"]
 MetricDirection = Literal["maximize", "minimize"]
-VALID_EXECUTIONS = {"native_xlam", "native_mllm_router", "swift_eval"}
+VALID_EXECUTIONS = {
+    "native_xlam",
+    "native_mllm_router",
+    "toolvqa_step",
+    "bfcl",
+    "visual_rft_coco",
+    "swift_eval",
+}
 VALID_METRIC_DIRECTIONS = {"maximize", "minimize"}
 VALID_PREDICTION_MODES = {"fresh", "score_only"}
 VALID_BENCHMARK_STATUSES = {"passed", "failed", "blocked", "skipped"}
@@ -41,6 +55,7 @@ class BenchmarkSpec:
     eval_limit: int | None = None
     metric_scales: dict[str, float] = field(default_factory=dict)
     metric_directions: dict[str, MetricDirection] = field(default_factory=dict)
+    settings: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, benchmark_id: str, data: Mapping[str, Any]) -> "BenchmarkSpec":
@@ -58,10 +73,10 @@ class BenchmarkSpec:
         primary_metrics = [item.strip() for item in raw_primary_metrics]
 
         raw_dataset_path = data.get("dataset_path")
-        if execution.startswith("native_") and (
+        if execution != "swift_eval" and (
             not isinstance(raw_dataset_path, str) or not raw_dataset_path.strip()
         ):
-            raise ValueError(f"Benchmark {benchmark_id!r} requires dataset_path for native execution.")
+            raise ValueError(f"Benchmark {benchmark_id!r} requires dataset_path for {execution} execution.")
         dataset_path = raw_dataset_path.strip() if isinstance(raw_dataset_path, str) else None
 
         raw_swift_datasets = data.get("swift_datasets", [])
@@ -124,6 +139,13 @@ class BenchmarkSpec:
         if eval_limit is not None and (not isinstance(eval_limit, int) or isinstance(eval_limit, bool) or eval_limit <= 0):
             raise ValueError(f"Benchmark {benchmark_id!r} eval_limit must be a positive integer.")
 
+        raw_settings = data.get("settings", {})
+        if not isinstance(raw_settings, Mapping) or not all(
+            isinstance(key, str) and key.strip() and key == key.strip()
+            for key in raw_settings
+        ):
+            raise ValueError(f"Benchmark {benchmark_id!r} settings must be a mapping with normalized string keys.")
+
         return cls(
             benchmark_id=benchmark_id,
             execution=cast(ExecutionMode, execution),
@@ -140,6 +162,7 @@ class BenchmarkSpec:
             eval_limit=eval_limit,
             metric_scales=metric_scales,
             metric_directions=metric_directions,
+            settings=dict(raw_settings),
         )
 
 
@@ -166,9 +189,9 @@ class EvaluationResult:
     prediction_mode: PredictionMode
     test_summary: TestSummary
     status: BenchmarkStatus
-    attempted: int
-    completed: int
-    failed: int
+    attempted: int | None
+    completed: int | None
+    failed: int | None
     upstream_metrics: dict[str, Any]
     metrics: dict[str, float]
     runtime: dict[str, Any]
@@ -208,10 +231,14 @@ class EvaluationResult:
         if status not in VALID_BENCHMARK_STATUSES:
             raise ValueError(f"Evaluation result has invalid status: {status!r}")
 
-        for field_name in ("attempted", "completed", "failed"):
-            value = payload.get(field_name)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"Evaluation result {field_name} must be a nonnegative integer.")
+        count_values = [payload.get(field_name) for field_name in ("attempted", "completed", "failed")]
+        if any(value is None for value in count_values) and not all(value is None for value in count_values):
+            raise ValueError("Evaluation result attempted/completed/failed must be known or unknown together.")
+        for field_name, value in zip(("attempted", "completed", "failed"), count_values):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise ValueError(f"Evaluation result {field_name} must be a nonnegative integer or null.")
 
         for field_name in ("upstream_metrics", "metrics", "runtime", "artifacts"):
             value = payload.get(field_name)
