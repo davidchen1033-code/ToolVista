@@ -1,0 +1,274 @@
+benchmarks:
+  xlam_function_calling:
+    execution: native_xlam
+    profile: light
+    method: OpenAI-compatible prediction plus ToolVista xLAM function-call scoring
+    source_project: xLAM ActionStudio
+    dataset_name: xLAM fixed-seed one-step function-calling manifest
+    split: fixed_seed_dev
+    evaluator: toolvista.evaluation.scorers.score_xlam
+    dataset_path: data/eval/xlam/light.jsonl
+    primary_metrics:
+      - xlam/function_name_accuracy
+      - xlam/argument_exact_match
+    metric_directions:
+      xlam/function_name_accuracy: maximize
+      xlam/argument_exact_match: maximize
+
+  toolvqa_step_light:
+    execution: toolvqa_step
+    profile: light
+    method: ToolVQA upstream OpenCompass every_with_gt step evaluation through the Qwen3-VL API
+    source_project: ToolVQA
+    dataset_name: ToolVQA official OpenCompass GTA benchmark
+    split: official_test_first_100
+    evaluator: ToolVQA GTABenchEvaluator mode=every_with_gt
+    dataset_path: /root/autodl-tmp/ToolVQA-release/opencompass/data/ToolVQA
+    eval_limit: 100
+    settings:
+      toolvqa_root: /root/autodl-tmp/ToolVQA-release
+      media_root: /root/autodl-tmp/ToolVista/data/raw/ToolVQA/images
+      workers: 2
+    primary_metrics:
+      - toolvqa_sbs/tool_accuracy
+      - toolvqa_sbs/argument_accuracy
+    metric_directions:
+      toolvqa_sbs/tool_accuracy: maximize
+      toolvqa_sbs/argument_accuracy: maximize
+
+  bfcl_non_live_light:
+    execution: bfcl
+    profile: light
+    method: ToolVista OpenAI-compatible generation plus official BFCL v4 partial evaluation
+    source_project: Berkeley Function-Calling Leaderboard
+    dataset_name: BFCL v4 non-live seven-category fixed-seed ID manifest
+    split: v4_non_live_stratified_seed42_200
+    evaluator: bfcl_eval official AST and irrelevance scorers
+    dataset_path: data/eval/bfcl/light.json
+    settings:
+      python: /root/autodl-tmp/venvs/bfcl/bin/python
+      bootstrap: scripts/bfcl_toolvista_bootstrap.py
+      num_threads: 4
+    primary_metrics:
+      - bfcl/non_live_overall_accuracy
+      - bfcl/irrelevance_detection
+    metric_directions:
+      bfcl/non_live_overall_accuracy: maximize
+      bfcl/irrelevance_detection: maximize
+
+  mllm_router_datafixed:
+    execution: native_mllm_router
+    profile: light
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router v2 datafixed per-row-catalog scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool Router v2 datafixed fixed-seed manifest
+    split: router_datafixed_fixed_seed_dev
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router_datafixed/light.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+
+  qwen3vl_general_light:
+    execution: swift_eval
+    profile: light
+    method: ms-swift swift eval through EvalScope VLMEvalKit backend
+    source_project: ms-swift and VLMEvalKit
+    dataset_name: RealWorldQA, MathVision_MINI, MMMU_DEV_VAL, OCRBench
+    split: upstream validation or benchmark default
+    evaluator: swift eval --eval_backend VLMEvalKit
+    eval_backend: VLMEvalKit
+    eval_limit: 100
+    swift_datasets:
+      - RealWorldQA
+      - MathVision_MINI
+      - MMMU_DEV_VAL
+      - OCRBench
+    primary_metrics:
+      - vlmevalkit/realworldqa/acc
+      - vlmevalkit/mathvision_mini/accuracy
+      - vlmevalkit/mmmu_dev_val/accuracy
+      - vlmevalkit/ocrbench/score
+    metric_scales:
+      RealWorldQA/acc: 0.01
+    metric_directions:
+      vlmevalkit/realworldqa/acc: maximize
+      vlmevalkit/mathvision_mini/accuracy: maximize
+      vlmevalkit/mmmu_dev_val/accuracy: maximize
+      vlmevalkit/ocrbench/score: maximize
+
+  visual_rft_coco_light:
+    execution: visual_rft_coco
+    profile: light
+    method: Qwen3-VL API detection plus Visual-RFT upstream COCO evaluation
+    source_project: Visual-RFT
+    dataset_name: Visual-RFT COCO open-vocabulary novel-15 fixed-seed query manifest
+    split: COCO val2017 novel15 grouped light
+    evaluator: Visual-RFT CocoDetectionEvaluator
+    dataset_path: data/eval/visual_rft_coco/light.jsonl
+    settings:
+      annotations: /root/autodl-tmp/datasets/COCO2017/annotations/instances_val2017.json
+      upstream_evaluator: /root/autodl-tmp/Visual-RFT/coco_evaluation/coco_evaluation.py
+    primary_metrics:
+      - visual_rft_coco/novel15_map
+    metric_directions:
+      visual_rft_coco/novel15_map: maximize
+      visual_rft_coco/negative_abstention_accuracy: maximize
+      visual_rft_coco/negative_false_positive_rate: minimize
+
+  xlam_function_calling_full:
+    execution: native_xlam
+    profile: full
+    method: OpenAI-compatible prediction plus ToolVista xLAM function-call scoring
+    source_project: xLAM ActionStudio
+    dataset_name: All eligible one-step function-calling targets from the xLAM trajectory holdout
+    split: full_holdout
+    evaluator: toolvista.evaluation.scorers.score_xlam
+    dataset_path: data/eval/xlam/full.jsonl
+    primary_metrics:
+      - xlam/function_name_accuracy
+      - xlam/argument_exact_match
+    metric_directions:
+      xlam/function_name_accuracy: maximize
+      xlam/argument_exact_match: maximize
+
+  toolvqa_step_full:
+    execution: toolvqa_step
+    profile: full
+    method: ToolVQA upstream OpenCompass every_with_gt step evaluation through the Qwen3-VL API
+    source_project: ToolVQA
+    dataset_name: ToolVQA official OpenCompass GTA benchmark
+    split: official_test_1622
+    evaluator: ToolVQA GTABenchEvaluator mode=every_with_gt
+    dataset_path: /root/autodl-tmp/ToolVQA-release/opencompass/data/ToolVQA
+    settings:
+      toolvqa_root: /root/autodl-tmp/ToolVQA-release
+      media_root: /root/autodl-tmp/ToolVista/data/raw/ToolVQA/images
+      workers: 2
+    primary_metrics:
+      - toolvqa_sbs/tool_accuracy
+      - toolvqa_sbs/argument_accuracy
+    metric_directions:
+      toolvqa_sbs/tool_accuracy: maximize
+      toolvqa_sbs/argument_accuracy: maximize
+
+  bfcl_non_live_full:
+    execution: bfcl
+    profile: full
+    method: ToolVista OpenAI-compatible generation plus official BFCL v4 evaluation
+    source_project: Berkeley Function-Calling Leaderboard
+    dataset_name: BFCL v4 complete non-live seven-category ID manifest
+    split: v4_non_live_complete_1390
+    evaluator: bfcl_eval official AST and irrelevance scorers
+    dataset_path: data/eval/bfcl/full.json
+    settings:
+      python: /root/autodl-tmp/venvs/bfcl/bin/python
+      bootstrap: scripts/bfcl_toolvista_bootstrap.py
+      num_threads: 4
+    primary_metrics:
+      - bfcl/non_live_overall_accuracy
+      - bfcl/irrelevance_detection
+    metric_directions:
+      bfcl/non_live_overall_accuracy: maximize
+      bfcl/irrelevance_detection: maximize
+
+  mllm_router_datafixed_full:
+    execution: native_mllm_router
+    profile: full
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router v2 datafixed per-row-catalog scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool Router v2 datafixed complete fixed-seed prompt-group holdout
+    split: router_datafixed_full_holdout
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router_datafixed/full.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+
+  qwen3vl_general_full:
+    execution: swift_eval
+    profile: full
+    method: ms-swift swift eval through EvalScope VLMEvalKit backend
+    source_project: ms-swift and VLMEvalKit
+    dataset_name: RealWorldQA, MathVision_MINI, MMMU_DEV_VAL, OCRBench
+    split: upstream complete validation or benchmark default
+    evaluator: swift eval --eval_backend VLMEvalKit
+    eval_backend: VLMEvalKit
+    swift_datasets:
+      - RealWorldQA
+      - MathVision_MINI
+      - MMMU_DEV_VAL
+      - OCRBench
+    primary_metrics:
+      - vlmevalkit/realworldqa/acc
+      - vlmevalkit/mathvision_mini/accuracy
+      - vlmevalkit/mmmu_dev_val/accuracy
+      - vlmevalkit/ocrbench/score
+    metric_scales:
+      RealWorldQA/acc: 0.01
+    metric_directions:
+      vlmevalkit/realworldqa/acc: maximize
+      vlmevalkit/mathvision_mini/accuracy: maximize
+      vlmevalkit/mmmu_dev_val/accuracy: maximize
+      vlmevalkit/ocrbench/score: maximize
+
+  visual_rft_coco_full:
+    execution: visual_rft_coco
+    profile: full
+    method: Qwen3-VL API detection plus Visual-RFT upstream COCO evaluation
+    source_project: Visual-RFT
+    dataset_name: Visual-RFT COCO open-vocabulary novel-15 complete query manifest
+    split: COCO val2017 novel15 full
+    evaluator: Visual-RFT CocoDetectionEvaluator
+    dataset_path: data/eval/visual_rft_coco/full.jsonl
+    settings:
+      annotations: /root/autodl-tmp/datasets/COCO2017/annotations/instances_val2017.json
+      upstream_evaluator: /root/autodl-tmp/Visual-RFT/coco_evaluation/coco_evaluation.py
+    primary_metrics:
+      - visual_rft_coco/novel15_map
+    metric_directions:
+      visual_rft_coco/novel15_map: maximize
+      visual_rft_coco/negative_abstention_accuracy: maximize
+      visual_rft_coco/negative_false_positive_rate: minimize
+
+  mllm_router_datafixed_agentretention:
+    execution: native_mllm_router
+    profile: light
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router v2 agent-retention scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool Router v2 datafixed-agentretention balanced fixed-seed manifest
+    split: router_datafixed_agentretention_fixed_seed_dev
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router_datafixed-agentretention/light.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+      mllm_router/accuracy_by_modality/video: maximize
+      mllm_router/invalid_route_rate: minimize
+
+  mllm_router_datafixed_agentretention_full:
+    execution: native_mllm_router
+    profile: full
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router v2 agent-retention scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool Router v2 datafixed-agentretention complete fixed-seed manifest
+    split: router_datafixed_agentretention_full_holdout
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router_datafixed-agentretention/full.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+      mllm_router/accuracy_by_modality/video: maximize
+      mllm_router/invalid_route_rate: minimize

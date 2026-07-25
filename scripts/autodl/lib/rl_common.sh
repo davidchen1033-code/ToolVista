@@ -12,6 +12,8 @@ OUTPUT_DIR="${OUTPUT_DIR:?OUTPUT_DIR must be set by the RL branch launcher}"
 STAGE="${STAGE:?STAGE must be set by the RL branch launcher}"
 PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/venvs/toolvista/bin/python}"
 SWIFT_BIN="${SWIFT_BIN:-/root/autodl-tmp/venvs/toolvista/bin/swift}"
+C3_RETENTION_GATE="${C3_RETENTION_GATE-${C3_CHECKPOINT}/toolvista_c3_retention_gate.json}"
+REQUIRE_C3_RETENTION_GATE="${REQUIRE_C3_RETENTION_GATE:-true}"
 
 SEED="${SEED:-42}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
@@ -32,6 +34,7 @@ BETA="${BETA:-0.04}"
 VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.4}"
 VLLM_TENSOR_PARALLEL_SIZE="${VLLM_TENSOR_PARALLEL_SIZE:-1}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-${MAX_LENGTH}}"
+SLEEP_LEVEL="${SLEEP_LEVEL:-0}"
 OFFLOAD_MODEL="${OFFLOAD_MODEL:-true}"
 OFFLOAD_OPTIMIZER="${OFFLOAD_OPTIMIZER:-true}"
 LORA_RANK="${LORA_RANK:-8}"
@@ -53,6 +56,22 @@ test -d "${TOOLVISTA_ROOT}"
 test -d "${MS_SWIFT_ROOT}"
 test -e "${BASE_MODEL}"
 test -d "${C3_CHECKPOINT}"
+case "${REQUIRE_C3_RETENTION_GATE}" in
+  true)
+    test -n "${C3_RETENTION_GATE}"
+    test -s "${C3_RETENTION_GATE}"
+    "${PYTHON_BIN}" "${TOOLVISTA_ROOT}/scripts/verify_c3_retention_gate.py" \
+      --gate "${C3_RETENTION_GATE}" \
+      --checkpoint "${C3_CHECKPOINT}"
+    ;;
+  false)
+    [[ -z "${C3_RETENTION_GATE}" ]] || test -s "${C3_RETENTION_GATE}"
+    ;;
+  *)
+    echo "REQUIRE_C3_RETENTION_GATE must be true or false" >&2
+    exit 2
+    ;;
+esac
 test -s "${DATASET}"
 test -f "${REWARD_PLUGIN}"
 if ! "${PYTHON_BIN}" -c "import vllm" >/dev/null 2>&1; then
@@ -111,7 +130,7 @@ cd "${MS_SWIFT_ROOT}"
   --vllm_gpu_memory_utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
   --vllm_tensor_parallel_size "${VLLM_TENSOR_PARALLEL_SIZE}" \
   --vllm_max_model_len "${VLLM_MAX_MODEL_LEN}" \
-  --sleep_level 1 \
+  --sleep_level "${SLEEP_LEVEL}" \
   --offload_model "${OFFLOAD_MODEL}" \
   --offload_optimizer "${OFFLOAD_OPTIMIZER}" \
   --num_train_epochs "${EPOCHS}" \

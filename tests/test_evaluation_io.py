@@ -350,12 +350,13 @@ class EvaluationIOTest(unittest.TestCase):
 
         self.assertEqual(registry["xlam_function_calling"].execution, "native_xlam")
         self.assertEqual(registry["mllm_router"].execution, "native_mllm_router")
+        self.assertEqual(registry["mllm_router_v2"].execution, "native_mllm_router")
         self.assertEqual(registry["qwen3vl_general_light"].eval_backend, "VLMEvalKit")
         checkpoint_suite = [
             "xlam_function_calling",
             "toolvqa_step_light",
             "bfcl_non_live_light",
-            "mllm_router",
+            "mllm_router_v2",
             "qwen3vl_general_light",
             "visual_rft_coco_light",
         ]
@@ -365,7 +366,7 @@ class EvaluationIOTest(unittest.TestCase):
             "xlam_function_calling_full",
             "toolvqa_step_full",
             "bfcl_non_live_full",
-            "mllm_router_full",
+            "mllm_router_v2_full",
             "qwen3vl_general_full",
             "visual_rft_coco_full",
         ]
@@ -376,6 +377,7 @@ class EvaluationIOTest(unittest.TestCase):
         self.assertEqual(registry["visual_rft_coco_light"].execution, "visual_rft_coco")
         self.assertEqual(registry["xlam_function_calling_full"].profile, "full")
         self.assertEqual(registry["mllm_router_full"].profile, "full")
+        self.assertEqual(registry["mllm_router_v2_full"].profile, "full")
         self.assertIsNone(registry["qwen3vl_general_full"].eval_limit)
 
     def test_registry_and_suites_reject_malformed_entries(self) -> None:

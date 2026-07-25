@@ -18,12 +18,28 @@ benchmarks:
   mllm_router:
     execution: native_mllm_router
     profile: light
-    method: OpenAI-compatible prediction plus ToolVista MLLM Router scoring
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router legacy shared-catalog scoring
     source_project: MLLM-Tool
-    dataset_name: MLLM-Tool text/image/video Router fixed-seed manifest
-    split: fixed_seed_dev
+    dataset_name: MLLM-Tool text/image/video Router legacy fixed-seed manifest
+    split: legacy_fixed_seed_dev
     evaluator: toolvista.evaluation.scorers.score_mllm_router
     dataset_path: data/eval/mllm_router/light.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+
+  mllm_router_v2:
+    execution: native_mllm_router
+    profile: light
+    method: OpenAI-compatible prediction plus ToolVista MLLM Router v2 per-row-catalog scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool text/image/video Router v2 fixed-seed manifest
+    split: router_v2_fixed_seed_dev
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router_v2/light.jsonl
     primary_metrics:
       - mllm_router/top1_accuracy
       - mllm_router/macro_f1
@@ -78,12 +94,28 @@ benchmarks:
   mllm_router_full:
     execution: native_mllm_router
     profile: full
-    method: OpenAI-compatible multimodal prediction plus ToolVista MLLM Router scoring
+    method: OpenAI-compatible multimodal prediction plus ToolVista MLLM Router legacy shared-catalog scoring
     source_project: MLLM-Tool
-    dataset_name: MLLM-Tool text/image/video complete fixed-seed prompt-group holdout
-    split: full_holdout
+    dataset_name: MLLM-Tool text/image/video Router legacy complete fixed-seed prompt-group holdout
+    split: legacy_full_holdout
     evaluator: toolvista.evaluation.scorers.score_mllm_router
     dataset_path: data/eval/mllm_router/full.jsonl
+    primary_metrics:
+      - mllm_router/top1_accuracy
+      - mllm_router/macro_f1
+    metric_directions:
+      mllm_router/top1_accuracy: maximize
+      mllm_router/macro_f1: maximize
+
+  mllm_router_v2_full:
+    execution: native_mllm_router
+    profile: full
+    method: OpenAI-compatible multimodal prediction plus ToolVista MLLM Router v2 per-row-catalog scoring
+    source_project: MLLM-Tool
+    dataset_name: MLLM-Tool text/image/video Router v2 complete fixed-seed prompt-group holdout
+    split: router_v2_full_holdout
+    evaluator: toolvista.evaluation.scorers.score_mllm_router
+    dataset_path: data/eval/mllm_router_v2/full.jsonl
     primary_metrics:
       - mllm_router/top1_accuracy
       - mllm_router/macro_f1

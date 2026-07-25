@@ -38,19 +38,20 @@ class C0ReadinessTest(unittest.TestCase):
         )
         for relative in (
             "data/exports/msswift_sft/xlam_train.jsonl",
-            "data/exports/msswift_sft/mllm_tool_router_train.jsonl",
+            "data/exports/msswift_sft/mllm_tool_router_v2_train.jsonl",
+            "data/exports/msswift_sft/toolvqa_direct_answer_retention_train.jsonl",
             "data/exports/msswift_sft/toolvqa_train.jsonl",
             "data/exports/msswift_grpo/visual_rft_coco_base65_train.jsonl",
             "data/eval/xlam/full.jsonl",
             "data/eval/xlam/light.jsonl",
-            "data/eval/mllm_router/full.jsonl",
-            "data/eval/mllm_router/light.jsonl",
+            "data/eval/mllm_router_v2/full.jsonl",
+            "data/eval/mllm_router_v2/light.jsonl",
             "data/exports/msswift_sft/toolvqa_test.jsonl",
         ):
             self.write_jsonl(root / relative)
         for relative in (
             "data/splits/xlam/seed42.json",
-            "data/splits/mllm_router/seed42.json",
+            "data/splits/mllm_router_v2/seed42.json",
         ):
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,11 +60,11 @@ class C0ReadinessTest(unittest.TestCase):
         config_dir.mkdir(parents=True)
         light_suite = [
             "xlam_function_calling", "toolvqa_step_light", "bfcl_non_live_light",
-            "mllm_router", "qwen3vl_general_light", "visual_rft_coco_light",
+            "mllm_router_v2", "qwen3vl_general_light", "visual_rft_coco_light",
         ]
         full_suite = [
             "xlam_function_calling_full", "toolvqa_step_full", "bfcl_non_live_full",
-            "mllm_router_full", "qwen3vl_general_full", "visual_rft_coco_full",
+            "mllm_router_v2_full", "qwen3vl_general_full", "visual_rft_coco_full",
         ]
         suite_payload = {
             "suites": {
@@ -130,7 +131,7 @@ class C0ReadinessTest(unittest.TestCase):
             cuda_available=False,
             wandb_configured=True,
             minimum_rows={key: 1 for key in (
-                "xlam_train", "mllm_router_train", "toolvqa_train", "visual_rft_train",
+                "xlam_train", "mllm_router_train", "c3_direct_answer_train", "toolvqa_train", "visual_rft_train",
                 "xlam_full", "xlam_light", "mllm_router_full", "mllm_router_light",
                 "visual_rft_coco_full", "visual_rft_coco_light", "bfcl_full", "bfcl_light",
                 "toolvqa_test", "toolvqa_upstream", "coco_val2017",
@@ -156,7 +157,7 @@ class C0ReadinessTest(unittest.TestCase):
             cuda_available=False,
             wandb_configured=True,
             minimum_rows={key: 1 for key in (
-                "xlam_train", "mllm_router_train", "toolvqa_train", "visual_rft_train",
+                "xlam_train", "mllm_router_train", "c3_direct_answer_train", "toolvqa_train", "visual_rft_train",
                 "xlam_full", "xlam_light", "mllm_router_full", "mllm_router_light",
                 "visual_rft_coco_full", "visual_rft_coco_light", "bfcl_full", "bfcl_light",
                 "toolvqa_test", "toolvqa_upstream", "coco_val2017",
@@ -177,7 +178,7 @@ class C0ReadinessTest(unittest.TestCase):
         root = self.make_root()
         model, toolvqa, visual_rft, coco = self.materialize_required_files(root)
         minimum_rows = {key: 1 for key in (
-            "xlam_train", "mllm_router_train", "toolvqa_train", "visual_rft_train",
+            "xlam_train", "mllm_router_train", "c3_direct_answer_train", "toolvqa_train", "visual_rft_train",
             "xlam_full", "xlam_light", "mllm_router_full", "mllm_router_light",
             "visual_rft_coco_full", "visual_rft_coco_light", "bfcl_full", "bfcl_light",
             "toolvqa_test", "toolvqa_upstream", "coco_val2017",
@@ -214,7 +215,7 @@ class C0ReadinessTest(unittest.TestCase):
             for dataset, metadata in VLMEVALKIT_DATASETS.items()
         }
         minimum_rows = {key: 1 for key in (
-            "xlam_train", "mllm_router_train", "toolvqa_train", "visual_rft_train",
+            "xlam_train", "mllm_router_train", "c3_direct_answer_train", "toolvqa_train", "visual_rft_train",
             "xlam_full", "xlam_light", "mllm_router_full", "mllm_router_light",
             "visual_rft_coco_full", "visual_rft_coco_light", "bfcl_full", "bfcl_light",
             "toolvqa_test", "toolvqa_upstream", "coco_val2017",
@@ -293,7 +294,7 @@ class C0ReadinessTest(unittest.TestCase):
             cuda_available=False,
             wandb_configured=True,
             minimum_rows={key: 1 for key in (
-                "xlam_train", "mllm_router_train", "toolvqa_train", "visual_rft_train",
+                "xlam_train", "mllm_router_train", "c3_direct_answer_train", "toolvqa_train", "visual_rft_train",
                 "xlam_full", "xlam_light", "mllm_router_full", "mllm_router_light",
                 "visual_rft_coco_full", "visual_rft_coco_light", "bfcl_full", "bfcl_light",
                 "toolvqa_test", "toolvqa_upstream", "coco_val2017",
@@ -323,7 +324,7 @@ class C0ReadinessTest(unittest.TestCase):
             cuda_available=False,
             wandb_configured=True,
             minimum_rows={key: 1 for key in (
-                "xlam_train", "mllm_router_train", "toolvqa_train", "visual_rft_train",
+                "xlam_train", "mllm_router_train", "c3_direct_answer_train", "toolvqa_train", "visual_rft_train",
                 "xlam_full", "xlam_light", "mllm_router_full", "mllm_router_light",
                 "visual_rft_coco_full", "visual_rft_coco_light", "bfcl_full", "bfcl_light",
                 "toolvqa_test", "toolvqa_upstream", "coco_val2017",

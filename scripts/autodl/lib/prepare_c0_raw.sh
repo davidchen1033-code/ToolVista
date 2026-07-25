@@ -26,6 +26,13 @@ cd "${TOOLVISTA_ROOT}"
   --mllm-file-keys text image video \
   --overwrite
 
+"${PYTHON_BIN}" scripts/prepare_c3_direct_answer_retention.py \
+  --source data/exports/msswift_sft/toolvqa_train.jsonl \
+  --output data/exports/msswift_sft/toolvqa_direct_answer_retention_train.jsonl \
+  --max-rows 12000 \
+  --seed "${SEED}" \
+  --overwrite
+
 "$PYTHON_BIN" scripts/prepare_visual_rft_coco_eval.py \
   --annotations "$COCO_ROOT/annotations/instances_val2017.json" \
   --images-dir "$COCO_ROOT/val2017" \

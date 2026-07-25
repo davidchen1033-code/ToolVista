@@ -8,10 +8,12 @@ from pathlib import Path
 
 from scripts.prepare_training_and_eval_data import (
     _is_mllm_router_sample,
+    _write_json,
     belongs_to_eval,
     prepare_mllm_router,
     prepare_xlam,
 )
+from toolvista.router_data import ROUTER_CONTRACT_VERSION, ROUTER_MODE_MARKER
 from toolvista.evaluation.io import load_jsonl
 from toolvista.schema.canonical import CanonicalMessage, CanonicalSample
 from toolvista.utils.paths import ToolVistaPaths
@@ -172,15 +174,20 @@ class TrainingAndEvaluationSplitTest(unittest.TestCase):
         train_rows = load_jsonl(root / "mllm_train.jsonl")
         full_rows = load_jsonl(root / "mllm_full.jsonl")
         self.assertEqual(len(train_rows), 1)
-        self.assertIn("Keep this", train_rows[0]["messages"][0]["content"])
+        self.assertIn(ROUTER_MODE_MARKER, train_rows[0]["messages"][0]["content"])
+        self.assertIn("Keep this", train_rows[0]["messages"][1]["content"])
+        self.assertEqual(train_rows[0]["router_contract"], ROUTER_CONTRACT_VERSION)
+        self.assertIn("tool-c", train_rows[0]["router_catalog"])
         self.assertEqual({row["input_modality"] for row in full_rows}, {"text", "image"})
         text_row = next(row for row in full_rows if row["input_modality"] == "text")
         image_row = next(row for row in full_rows if row["input_modality"] == "image")
         self.assertEqual(text_row["target_tools"], ["tool-a", "tool-b"])
         self.assertEqual(image_row["target_tools"], ["tool-d"])
-        self.assertEqual(text_row["messages"], [{"role": "user", "content": "Route   This"}])
-        self.assertNotIn("tool-c", json.dumps(text_row["messages"]))
-        self.assertEqual(set(text_row["router_catalog"]), {"tool-a", "tool-b", "tool-c", "tool-d"})
+        self.assertEqual(text_row["messages"][1], {"role": "user", "content": "Route   This"})
+        self.assertIn(ROUTER_MODE_MARKER, text_row["messages"][0]["content"])
+        self.assertEqual(set(text_row["router_catalog"]), {"tool-a", "tool-b", "tool-c"})
+        self.assertEqual(image_row["router_catalog"], ["tool-d"])
+        self.assertEqual(text_row["router_contract"], ROUTER_CONTRACT_VERSION)
         self.assertEqual(image_row["images"], [str(root / "raw" / "data" / "IT_data_ins" / "T+X-T_data" / "mm_dataset" / "image" / "sample.jpg").replace("\\", "/")])
         self.assertEqual(report["overlap"]["normalized_prompt_count"], 0)
 
@@ -201,6 +208,13 @@ class TrainingAndEvaluationSplitTest(unittest.TestCase):
                 light_limit=1,
                 overwrite=False,
             )
+
+    def test_json_writer_creates_parent_directories(self) -> None:
+        output = self.make_temp_dir() / "nested/report.json"
+
+        _write_json(output, {"ready": True})
+
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"ready": True})
 
     def test_mllm_router_rejects_targets_with_trailing_user_history(self) -> None:
         sample = CanonicalSample(

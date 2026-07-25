@@ -32,6 +32,7 @@ LOGGING_STEPS="${LOGGING_STEPS:-1}"
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-4}"
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
 VALIDATE_ROWS="${VALIDATE_ROWS:-100}"
+REQUIRE_NEW_ADAPTER="${REQUIRE_NEW_ADAPTER:-true}"
 REPORT_TO="${REPORT_TO:-wandb}"
 WANDB_PROJECT="${WANDB_PROJECT:-toolvista-qwen3vl}"
 WANDB_GROUP="${WANDB_GROUP:-${STAGE}}"
@@ -59,20 +60,25 @@ export PYTHONPATH="${MS_SWIFT_ROOT}:${TOOLVISTA_ROOT}:${PYTHONPATH:-}"
 cd "${TOOLVISTA_ROOT}"
 "${PYTHON_BIN}" scripts/validate_ms_swift_dataset.py "${DATASET}" --max-rows "${VALIDATE_ROWS}"
 
-resume_args=()
+inheritance_args=()
 if [[ -n "${PREVIOUS_CHECKPOINT}" ]]; then
-  resume_args=(
-    --resume_from_checkpoint "${PREVIOUS_CHECKPOINT}"
-    --resume_only_model true
-  )
+  # A new curriculum stage must load only the trainable LoRA weights. Using
+  # resume_from_checkpoint also exposes trainer_state.json to Transformers and
+  # can carry the previous stage's global_step into the new stage.
+  inheritance_args=(--adapters "${PREVIOUS_CHECKPOINT}")
 fi
+
+mkdir -p "${OUTPUT_DIR}"
+stage_marker="${OUTPUT_DIR}/.toolvista-stage-start-$$"
+: > "${stage_marker}"
+trap 'rm -f "${stage_marker}"' EXIT
 
 cd "${MS_SWIFT_ROOT}"
 "${SWIFT_BIN}" sft \
   --model "${BASE_MODEL}" \
   --dataset "${DATASET}" \
   --load_args false \
-  "${resume_args[@]}" \
+  "${inheritance_args[@]}" \
   --agent_template hermes \
   --tuner_type lora \
   --torch_dtype "${TORCH_DTYPE}" \
@@ -103,3 +109,24 @@ cd "${MS_SWIFT_ROOT}"
   --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" \
   --output_dir "${OUTPUT_DIR}" \
   --report_to "${REPORT_TO}"
+
+if [[ "${REQUIRE_NEW_ADAPTER}" == "true" ]]; then
+  new_adapter="$({
+    find "${OUTPUT_DIR}" -type f -name adapter_model.safetensors -newer "${stage_marker}" -print
+  } | sort | tail -n 1)"
+  if [[ -z "${new_adapter}" || ! -s "${new_adapter}" ]]; then
+    echo "ERROR: ms-swift exited successfully but this stage wrote no new adapter_model.safetensors." >&2
+    echo "Check for inherited global_step/max_steps before treating the run as successful." >&2
+    exit 1
+  fi
+  echo "ToolVista verified new stage adapter: ${new_adapter}"
+  if [[ -n "${PREVIOUS_CHECKPOINT}" && "${MAX_STEPS}" != "1" ]]; then
+    previous_adapter="${PREVIOUS_CHECKPOINT}/adapter_model.safetensors"
+    if [[ -s "${previous_adapter}" ]] && cmp -s "${previous_adapter}" "${new_adapter}"; then
+      echo "ERROR: the new stage adapter is byte-identical to the previous-stage adapter." >&2
+      echo "The run did not persist an effective model update." >&2
+      exit 1
+    fi
+    echo "ToolVista verified adapter weights changed from: ${previous_adapter}"
+  fi
+fi

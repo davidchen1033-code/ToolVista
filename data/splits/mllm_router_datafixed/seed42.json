@@ -1,0 +1,37 @@
+{
+  "source": "MLLM-Tool",
+  "variant": "datafixed",
+  "file_keys": [
+    "text",
+    "image",
+    "video"
+  ],
+  "seed": 42,
+  "namespace": "mllm_router",
+  "namespace_reason": "kept equal to control for an apples-to-apples split",
+  "algorithm": "sha256-first-64-bits",
+  "eval_fraction": 0.2,
+  "candidate_catalog_size": 32,
+  "router_contract": "toolvista-router-v2",
+  "catalog_size_by_modality": {
+    "image": 191,
+    "text": 654,
+    "video": 10
+  },
+  "train_normalized_prompt_count": 5460,
+  "eval_normalized_prompt_count": 1444,
+  "train_rows": 6939,
+  "collapsed_duplicate_train_rows": 26499,
+  "train_rows_by_modality": {
+    "image": 2499,
+    "text": 4374,
+    "video": 66
+  },
+  "full_rows": 1726,
+  "light_rows": 200,
+  "skipped": 0,
+  "adapter_results": 41589,
+  "overlap": {
+    "normalized_prompt_count": 0
+  }
+}

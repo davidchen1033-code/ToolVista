@@ -3,7 +3,7 @@ suites:
     - xlam_function_calling
     - toolvqa_step_light
     - bfcl_non_live_light
-    - mllm_router
+    - mllm_router_v2
     - qwen3vl_general_light
     - visual_rft_coco_light
 
@@ -11,7 +11,7 @@ suites:
     - xlam_function_calling
     - toolvqa_step_light
     - bfcl_non_live_light
-    - mllm_router
+    - mllm_router_v2
     - qwen3vl_general_light
     - visual_rft_coco_light
 
@@ -19,7 +19,7 @@ suites:
     - xlam_function_calling
     - toolvqa_step_light
     - bfcl_non_live_light
-    - mllm_router
+    - mllm_router_v2
     - qwen3vl_general_light
     - visual_rft_coco_light
 
@@ -27,7 +27,7 @@ suites:
     - xlam_function_calling
     - toolvqa_step_light
     - bfcl_non_live_light
-    - mllm_router
+    - mllm_router_v2
     - qwen3vl_general_light
     - visual_rft_coco_light
 
@@ -35,19 +35,19 @@ suites:
     - xlam_function_calling
     - toolvqa_step_light
     - bfcl_non_live_light
-    - mllm_router
+    - mllm_router_v2
     - qwen3vl_general_light
     - visual_rft_coco_light
 
   phase1_smoke:
     - xlam_function_calling
-    - mllm_router
+    - mllm_router_v2
 
   c0_full:
     - xlam_function_calling_full
     - toolvqa_step_full
     - bfcl_non_live_full
-    - mllm_router_full
+    - mllm_router_v2_full
     - qwen3vl_general_full
     - visual_rft_coco_full
 
@@ -55,6 +55,6 @@ suites:
     - xlam_function_calling_full
     - toolvqa_step_full
     - bfcl_non_live_full
-    - mllm_router_full
+    - mllm_router_v2_full
     - qwen3vl_general_full
     - visual_rft_coco_full

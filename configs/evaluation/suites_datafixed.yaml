@@ -1,0 +1,92 @@
+suites:
+  c3_datafixed_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  c0_datafixed_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  c1_datafixed_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  c2_datafixed_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  c4_datafixed_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  phase1_datafixed_smoke:
+    - xlam_function_calling
+    - mllm_router_datafixed
+
+  c0_datafixed_full:
+    - xlam_function_calling_full
+    - toolvqa_step_full
+    - bfcl_non_live_full
+    - mllm_router_datafixed_full
+    - qwen3vl_general_full
+    - visual_rft_coco_full
+
+  c4_datafixed_full:
+    - xlam_function_calling_full
+    - toolvqa_step_full
+    - bfcl_non_live_full
+    - mllm_router_datafixed_full
+    - qwen3vl_general_full
+    - visual_rft_coco_full
+
+  c3_datafixed_agentretention_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed_agentretention
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  c3_datafixed_agentretention_full:
+    - xlam_function_calling_full
+    - toolvqa_step_full
+    - bfcl_non_live_full
+    - mllm_router_datafixed_agentretention_full
+    - qwen3vl_general_full
+    - visual_rft_coco_full
+
+  c4_datafixed_agentretention_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router_datafixed_agentretention
+    - qwen3vl_general_light
+    - visual_rft_coco_light
+
+  c4_datafixed_agentretention_full:
+    - xlam_function_calling_full
+    - toolvqa_step_full
+    - bfcl_non_live_full
+    - mllm_router_datafixed_agentretention_full
+    - qwen3vl_general_full
+    - visual_rft_coco_full

@@ -34,7 +34,7 @@
 
 - [ ] Write launcher contract tests using a temporary fake `swift` executable and small JSONL fixtures.
 - [ ] Verify C1 invokes `swift sft` from the base model without resume flags.
-- [ ] Verify C2 builds an 80/20 ToolVQA/xLAM dataset and passes `C1_CHECKPOINT` through `--resume_from_checkpoint ... --resume_only_model true`.
+- [ ] Verify C2 builds an 80/20 ToolVQA/xLAM dataset and loads `C1_CHECKPOINT` through `--adapters` without inheriting trainer state.
 - [ ] Verify C3 builds a 60/20/20 MLLM/ToolVQA/xLAM dataset and passes `C2_CHECKPOINT` the same way.
 - [ ] Implement fail-fast checks for the ms-swift root, base model, non-empty dataset, and required previous checkpoint.
 - [ ] Keep SFT hyperparameters, W&B naming, validation, output directories, and optional `MAX_STEPS` in `sft_common.sh`.

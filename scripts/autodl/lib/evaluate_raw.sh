@@ -23,6 +23,8 @@ LMUData="${LMUData:-/root/autodl-tmp/cache/vlmevalkit}"
 HF_HOME="${HF_HOME:-/root/autodl-tmp/cache/huggingface}"
 TOOLVQA_PYTHON="${TOOLVQA_PYTHON:-/root/autodl-tmp/venvs/toolvqa/bin/python}"
 BFCL_PYTHON="${BFCL_PYTHON:-/root/autodl-tmp/venvs/bfcl/bin/python}"
+C3_ADAPTER_CHECKPOINT="${C3_ADAPTER_CHECKPOINT:-}"
+C3_RETENTION_GATE="${C3_RETENTION_GATE:-}"
 
 test -d "${TOOLVISTA_ROOT}"
 test -e "${CHECKPOINT}"
@@ -59,6 +61,24 @@ if [[ -n "${HISTORY_SUMMARY}" ]]; then
   comparison_args+=(--history-summary "${HISTORY_SUMMARY}")
 fi
 
+if [[ "${SUITE}" == "c3_light" ]]; then
+  test -n "${HISTORY_SUMMARY}" || {
+    echo "c3_light requires HISTORY_SUMMARY pointing to the C2 light summary." >&2
+    exit 2
+  }
+  test -n "${C3_ADAPTER_CHECKPOINT}" || {
+    echo "c3_light requires C3_ADAPTER_CHECKPOINT for the C4 authorization gate." >&2
+    exit 2
+  }
+  test -d "${C3_ADAPTER_CHECKPOINT}"
+  if [[ "$(realpath "${CHECKPOINT}")" != "$(realpath "${C3_ADAPTER_CHECKPOINT}")" ]]; then
+    echo "c3_light CHECKPOINT must equal C3_ADAPTER_CHECKPOINT so the retention gate authorizes the evaluated adapter." >&2
+    exit 2
+  fi
+  C3_RETENTION_GATE="${C3_RETENTION_GATE:-${C3_ADAPTER_CHECKPOINT}/toolvista_c3_retention_gate.json}"
+  rm -f "${C3_RETENTION_GATE}"
+fi
+
 CHECK_ONLY=true \
 MS_SWIFT_ROOT="${MS_SWIFT_ROOT:-/root/autodl-tmp/ms-swift}" \
 PYTHON_BIN="${PYTHON_BIN}" \
@@ -82,3 +102,11 @@ cd "${TOOLVISTA_ROOT}"
   --wandb \
   --wandb-project "${WANDB_PROJECT}" \
   --wandb-group "${WANDB_GROUP}"
+
+if [[ "${SUITE}" == "c3_light" ]]; then
+  "${PYTHON_BIN}" scripts/check_c3_retention.py \
+    --candidate-summary "${TOOLVISTA_ROOT}/runs/${RUN_ID}/summary.json" \
+    --baseline-summary "${HISTORY_SUMMARY}" \
+    --authorized-checkpoint "${C3_ADAPTER_CHECKPOINT}" \
+    --output "${C3_RETENTION_GATE}"
+fi

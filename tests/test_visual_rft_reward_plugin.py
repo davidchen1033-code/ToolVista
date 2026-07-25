@@ -141,6 +141,20 @@ class VisualRFTRewardPluginTest(unittest.TestCase):
 
         self.assertEqual(rewards, [0.0])
 
+    def test_unhashable_bbox_literal_receives_zero(self) -> None:
+        _, registry = load_plugin()
+        orm = registry["visual_rft_iou"]()
+        malformed = (
+            "<think>reason</think><answer>"
+            "{{'Position': [0, 0, 10, 10], 'Confidence': 1}}"
+            "</answer>"
+        )
+        gold = [{"Position": [0, 0, 10, 10], "Confidence": 1.0}]
+
+        rewards = orm([malformed], [answer(gold)], task=["detection"])
+
+        self.assertEqual(rewards, [0.0])
+
     def test_truncated_tail_keeps_complete_boxes_like_visual_rft(self) -> None:
         _, registry = load_plugin()
         orm = registry["visual_rft_iou"]()

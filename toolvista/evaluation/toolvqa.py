@@ -360,18 +360,23 @@ def run_toolvqa(
         str(workers),
         "--debug",
     ]
+    environment = os.environ.copy()
+    if not environment.get("OPENAI_API_KEY", "").strip():
+        environment["OPENAI_API_KEY"] = "EMPTY"
+    environment.update(
+        {
+            "HF_HOME": os.environ.get(
+                "HF_HOME", "/root/autodl-tmp/cache/huggingface"
+            ),
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        }
+    )
     try:
         completed = command_runner(
             command,
             cwd=str(opencompass_root),
-            env={
-                **os.environ,
-                "HF_HOME": os.environ.get(
-                    "HF_HOME", "/root/autodl-tmp/cache/huggingface"
-                ),
-                "HF_HUB_OFFLINE": "1",
-                "TRANSFORMERS_OFFLINE": "1",
-            },
+            env=environment,
             capture_output=True,
             text=True,
             check=False,
