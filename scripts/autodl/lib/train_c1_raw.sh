@@ -9,4 +9,4 @@ export OUTPUT_DIR="${OUTPUT_DIR:-${TOOLVISTA_ROOT}/outputs/c1_xlam_sft}"
 export WANDB_GROUP="${WANDB_GROUP:-c1-xlam}"
 export PREVIOUS_CHECKPOINT=""
 
-source "${TOOLVISTA_ROOT}/scripts/autodl/sft_common.sh"
+source "${TOOLVISTA_ROOT}/scripts/autodl/lib/sft_common.sh"

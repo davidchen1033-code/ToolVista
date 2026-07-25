@@ -1,0 +1,8 @@
+suites:
+  c4_legacy_rl_ab_light:
+    - xlam_function_calling
+    - toolvqa_step_light
+    - bfcl_non_live_light
+    - mllm_router
+    - qwen3vl_general_light
+    - visual_rft_coco_light

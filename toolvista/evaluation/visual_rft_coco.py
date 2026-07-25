@@ -85,6 +85,86 @@ def parse_boxes(text: Any) -> list[dict[str, Any]]:
     return boxes
 
 
+def _negative_prediction_kind(text: Any) -> str:
+    if not isinstance(text, str):
+        return "other"
+    match = ANSWER_PATTERN.search(text)
+    if match:
+        payload = match.group(1).strip()
+    elif "<answer>" in text or "</answer>" in text:
+        return "other"
+    else:
+        payload = text.strip()
+    normalized = re.sub(r"\s+", " ", payload).strip().casefold()
+    if normalized == "no objects":
+        return "abstention"
+    try:
+        value = json.loads(payload.replace("'", '"'))
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, list) and not value:
+        return "abstention"
+    if parse_boxes(text):
+        return "false_positive"
+    return "other"
+
+
+def score_negative_behavior(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, float], dict[str, Any]]:
+    if not rows or not all("has_ground_truth" in row for row in rows):
+        return {}, {
+            "available": False,
+            "reason": "has_ground_truth is not available on every prediction row",
+        }
+
+    negative_rows = 0
+    abstentions = 0
+    false_positives = 0
+    for index, row in enumerate(rows, 1):
+        has_ground_truth = row["has_ground_truth"]
+        if not isinstance(has_ground_truth, bool):
+            raise ValueError(
+                f"Visual-RFT prediction row {index} has non-boolean has_ground_truth."
+            )
+        if has_ground_truth:
+            continue
+        negative_rows += 1
+        kind = _negative_prediction_kind(row.get("prediction"))
+        abstentions += int(kind == "abstention")
+        false_positives += int(kind == "false_positive")
+
+    if negative_rows == 0:
+        return {}, {
+            "available": False,
+            "reason": "the evaluated split contains no negative queries",
+            "negative_rows": 0,
+        }
+
+    metrics = {
+        "visual_rft_coco/negative_abstention_accuracy": abstentions / negative_rows,
+        "visual_rft_coco/negative_false_positive_rate": false_positives / negative_rows,
+    }
+    details = {
+        "available": True,
+        "negative_rows": negative_rows,
+        "abstention_rows": abstentions,
+        "false_positive_rows": false_positives,
+        "other_rows": negative_rows - abstentions - false_positives,
+        "definitions": {
+            "negative_abstention_accuracy": (
+                "negative queries parsed as explicit No Objects or an empty list "
+                "/ all negative queries"
+            ),
+            "negative_false_positive_rate": (
+                "negative queries parsed with one or more valid boxes "
+                "/ all negative queries"
+            ),
+        },
+    }
+    return metrics, details
+
+
 def _to_coco_detection(row: Mapping[str, Any], box: Mapping[str, Any]) -> dict[str, Any]:
     width = float(row["image_width"])
     height = float(row["image_height"])
@@ -108,8 +188,14 @@ def predict_rows(
     api_model: str,
     timeout: float,
     prediction_client: PredictionClient = call_chat_completion,
+    progress_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     predictions: list[dict[str, Any]] = []
+    if progress_path is not None:
+        write_json(
+            progress_path,
+            {"phase": "predicting", "completed": 0, "total": len(rows)},
+        )
     for row in rows:
         output = dict(row)
         try:
@@ -124,6 +210,15 @@ def predict_rows(
         except Exception as exc:
             output["error"] = f"{type(exc).__name__}: {exc}"
         predictions.append(output)
+        if progress_path is not None:
+            write_json(
+                progress_path,
+                {
+                    "phase": "predicting",
+                    "completed": len(predictions),
+                    "total": len(rows),
+                },
+            )
     return predictions
 
 
@@ -235,10 +330,12 @@ def score_predictions(
             f"{nonfinite}"
         )
     selected_map = sum(selected_values) / len(selected_values) / 100.0
+    negative_metrics, negative_behavior = score_negative_behavior(rows)
     metrics = {
         "visual_rft_coco/novel15_map": selected_map,
         "visual_rft_coco/map": float(aggregate["mAP"]),
         "visual_rft_coco/ap50": float(aggregate["AP_50"]),
+        **negative_metrics,
     }
     upstream = {
         "aggregate": _json_safe(aggregate),
@@ -246,6 +343,7 @@ def score_predictions(
         "selected_categories": list(categories),
         "selected_map_percent": selected_map * 100.0,
         "prediction_count": len(detections),
+        "negative_behavior": negative_behavior,
     }
     return upstream, metrics, failures
 
@@ -288,6 +386,7 @@ def run_visual_rft_coco(
             api_model=api_model,
             timeout=timeout,
             prediction_client=prediction_client,
+            progress_path=benchmark_dir / "progress.json",
         )
         write_jsonl(predictions_path, predictions)
         prediction_mode = "fresh"

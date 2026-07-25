@@ -189,8 +189,14 @@ def predict_native_rows(
     api_model: str,
     timeout: float,
     prediction_client: PredictionClient,
+    progress_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     predictions: list[dict[str, Any]] = []
+    if progress_path is not None:
+        write_json(
+            progress_path,
+            {"phase": "predicting", "completed": 0, "total": len(rows)},
+        )
     for row in rows:
         output = dict(row)
         try:
@@ -212,6 +218,15 @@ def predict_native_rows(
         except Exception as exc:
             output["error"] = f"{type(exc).__name__}: {exc}"
         predictions.append(output)
+        if progress_path is not None:
+            write_json(
+                progress_path,
+                {
+                    "phase": "predicting",
+                    "completed": len(predictions),
+                    "total": len(rows),
+                },
+            )
     return predictions
 
 
@@ -300,6 +315,7 @@ def run_native_benchmark(
             api_model=api_model,
             timeout=timeout,
             prediction_client=prediction_client,
+            progress_path=benchmark_dir / "progress.json",
         )
         if len(predictions) != len(manifest_rows):
             raise ValueError(
@@ -752,8 +768,16 @@ def _exception_result(
     stderr_path = benchmark_dir / "stderr.log"
     stdout_path = benchmark_dir / "stdout.log"
     result_path = benchmark_dir / "result.json"
-    stderr_path.write_text(f"{type(error).__name__}: {error}\n", encoding="utf-8")
-    stdout_path.write_text("", encoding="utf-8")
+    wrapper_error = f"{type(error).__name__}: {error}\n"
+    if stderr_path.is_file() and stderr_path.stat().st_size:
+        with stderr_path.open("a", encoding="utf-8") as handle:
+            if not stderr_path.read_bytes().endswith(b"\n"):
+                handle.write("\n")
+            handle.write(wrapper_error)
+    else:
+        stderr_path.write_text(wrapper_error, encoding="utf-8")
+    if not stdout_path.is_file():
+        stdout_path.write_text("", encoding="utf-8")
     artifacts = {"stdout": stdout_path.as_posix(), "stderr": stderr_path.as_posix()}
     result = EvaluationResult(
         schema_version="1.0",

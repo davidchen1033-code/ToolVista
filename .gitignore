@@ -29,3 +29,6 @@ result/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Patch/editor backup files
+*.orig

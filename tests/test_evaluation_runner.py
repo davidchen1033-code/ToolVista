@@ -260,6 +260,10 @@ class NativeEvaluationRunnerTest(_TemporaryDirectoryTestCase):
         self.assertEqual(result.metrics["xlam/argument_exact_match"], 1.0)
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["tools"], load_jsonl(manifest)[0]["tools"])
+        self.assertEqual(
+            load_json(root / "run/eval/xlam_function_calling/progress.json"),
+            {"phase": "predicting", "completed": 1, "total": 1},
+        )
 
     def test_mllm_router_fresh_prediction_scores_assistant_content(self) -> None:
         root = self.make_temp_dir()

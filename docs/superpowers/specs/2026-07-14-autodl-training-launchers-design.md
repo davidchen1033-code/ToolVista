@@ -33,11 +33,12 @@ ToolVista 只负责数据组合、参数编排、结果目录和调用 ms-swift�
 C1 从原始 Qwen3-VL 基座开始。C2 和 C3 使用 ms-swift 的以下方式加载上一阶段结果：
 
 ```bash
---resume_from_checkpoint <previous-stage-checkpoint>
---resume_only_model true
+--adapters <previous-stage-checkpoint>
 ```
 
-这表示继承上一阶段模型或 LoRA 权重，但为新阶段重新创建 optimizer、学习率调度、训练步数和数据游标。它不是中断恢复。
+这表示继承上一阶段可训练 LoRA 权重，但为新阶段重新创建 trainer state、optimizer、
+学习率调度、训练步数和数据游标。阶段间不能使用 `--resume_from_checkpoint`，因为它是
+中断恢复入口，会让 Transformers 读取上一阶段 `trainer_state.json` 和 `global_step`。
 
 各阶段输出目录固定为：
 

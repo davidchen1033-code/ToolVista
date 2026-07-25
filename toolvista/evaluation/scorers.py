@@ -368,12 +368,11 @@ def score_mllm_router(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         )
     catalogs = [catalog for _, _, _, _, catalog in validated_rows if catalog is not None]
     if catalogs:
-        shared_catalog = catalogs[0]
         for row_index, row, target_tools, _, catalog in validated_rows:
-            if catalog is None or catalog != shared_catalog:
+            if catalog is None:
                 raise ValueError(
                     f"MLLM Router row {row.get('sample_id', row_index + 1)!r} must use "
-                    "the same router_catalog as every completed row."
+                    "router_catalog when any completed row provides one."
                 )
             missing_targets = target_tools - catalog
             if missing_targets:
@@ -381,7 +380,7 @@ def score_mllm_router(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
                     f"MLLM Router row {row.get('sample_id', row_index + 1)!r} has target_tools "
                     f"not present in router_catalog: {sorted(missing_targets)!r}."
                 )
-        valid_route_universe = set(shared_catalog)
+        valid_route_universe = None
     else:
         valid_route_universe = {
             route for _, _, target_tools, _, _ in validated_rows for route in target_tools
@@ -397,13 +396,15 @@ def score_mllm_router(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     predictions_by_label: dict[str, list[int]] = {}
     confusion_counts: dict[str, Counter[str]] = {}
 
-    for row_index, row, target_tools, modality, _ in validated_rows:
+    for row_index, row, target_tools, modality, catalog in validated_rows:
         predictions, is_valid = _route_predictions(row.get("prediction"))
         predicted_set = set(predictions)
         top1_correct = float(bool(predictions) and predictions[0] in target_tools)
         candidate_hit = float(bool(target_tools & predicted_set))
+        row_route_universe = catalog if catalog is not None else valid_route_universe
+        assert row_route_universe is not None
         invalid_route = float(
-            not predictions or any(route not in valid_route_universe for route in predictions)
+            not predictions or any(route not in row_route_universe for route in predictions)
         )
         format_valid.append(float(is_valid))
         top1_scores.append(top1_correct)

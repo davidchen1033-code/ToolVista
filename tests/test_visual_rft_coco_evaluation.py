@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import shutil
 import unittest
+import uuid
+from pathlib import Path
 
 from scripts.prepare_visual_rft_coco_eval import NOVEL15, select_light
-from toolvista.evaluation.visual_rft_coco import _to_coco_detection, parse_boxes
+from toolvista.evaluation.io import load_json
+from toolvista.evaluation.visual_rft_coco import _to_coco_detection, parse_boxes, predict_rows
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class VisualRFTCocoEvaluationTest(unittest.TestCase):
+    def make_temp_dir(self) -> Path:
+        path = REPO_ROOT / "tests" / f"tmp-visual-rft-progress-{uuid.uuid4().hex}"
+        path.mkdir()
+        self.addCleanup(shutil.rmtree, path, True)
+        return path
+
     def test_light_selection_keeps_complete_images_and_positive_category_coverage(self) -> None:
         rows = []
         for index, category in enumerate(NOVEL15, 1):
@@ -69,6 +82,33 @@ class VisualRFTCocoEvaluationTest(unittest.TestCase):
         self.assertEqual(detection["score"], 0.75)
         self.assertEqual(parse_boxes("<answer>No Objects</answer>"), [])
         self.assertEqual(parse_boxes("<answer>not-json</answer>"), [])
+
+    def test_prediction_writes_sample_level_progress(self) -> None:
+        root = self.make_temp_dir()
+
+        def fake_client(**kwargs: object) -> dict[str, object]:
+            del kwargs
+            return {"choices": [{"message": {"content": "<answer>No Objects</answer>"}}]}
+
+        progress = root / "progress.json"
+        rows = [
+            {"messages": [{"role": "user", "content": "one"}], "images": []},
+            {"messages": [{"role": "user", "content": "two"}], "images": []},
+        ]
+        predictions = predict_rows(
+            rows,
+            api_base="http://127.0.0.1:8000/v1",
+            api_model="model",
+            timeout=10.0,
+            prediction_client=fake_client,
+            progress_path=progress,
+        )
+
+        self.assertEqual(len(predictions), 2)
+        self.assertEqual(
+            load_json(progress),
+            {"phase": "predicting", "completed": 2, "total": 2},
+        )
 
 
 if __name__ == "__main__":

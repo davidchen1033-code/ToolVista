@@ -9,13 +9,45 @@ from collections import Counter
 from pathlib import Path
 
 from scripts.prepare_visual_rft_coco_eval import NOVEL15, build_queries, select_light
-from toolvista.evaluation.visual_rft_coco import parse_boxes, score_predictions
+from toolvista.evaluation.visual_rft_coco import (
+    parse_boxes,
+    score_negative_behavior,
+    score_predictions,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class VisualRftCocoTest(unittest.TestCase):
+    def test_negative_behavior_separates_abstention_false_positive_and_other(self) -> None:
+        metrics, details = score_negative_behavior(
+            [
+                {"has_ground_truth": False, "prediction": "<answer>No Objects</answer>"},
+                {"has_ground_truth": False, "prediction": "<answer>[]</answer>"},
+                {
+                    "has_ground_truth": False,
+                    "prediction": (
+                        "<answer>[{'Position':[10,20,110,220],"
+                        "'Confidence':0.75}]</answer>"
+                    ),
+                },
+                {"has_ground_truth": False, "prediction": "<answer>broken"},
+                {"has_ground_truth": True, "prediction": "<answer>No Objects</answer>"},
+            ]
+        )
+
+        self.assertEqual(
+            metrics["visual_rft_coco/negative_abstention_accuracy"], 0.5
+        )
+        self.assertEqual(
+            metrics["visual_rft_coco/negative_false_positive_rate"], 0.25
+        )
+        self.assertEqual(details["negative_rows"], 4)
+        self.assertEqual(details["abstention_rows"], 2)
+        self.assertEqual(details["false_positive_rows"], 1)
+        self.assertEqual(details["other_rows"], 1)
+
     def test_parser_accepts_answer_payload_and_rejects_malformed_boxes(self) -> None:
         boxes = parse_boxes(
             "<think>done</think><answer>[{'Position':[10,20,110,220],"

@@ -22,7 +22,8 @@ from toolvista.evaluation.vlmevalkit_cache import audit_vlmevalkit_cache
 
 DEFAULT_MINIMUM_ROWS = {
     "xlam_train": 100_000,
-    "mllm_router_train": 20_000,
+    "mllm_router_train": 4_000,
+    "c3_direct_answer_train": 10_000,
     "toolvqa_train": 20_000,
     "visual_rft_train": 5_000,
     "xlam_full": 1_000,
@@ -110,7 +111,7 @@ def _five_round_suite_stats(path: Path) -> dict[str, Any]:
         "xlam_function_calling",
         "toolvqa_step_light",
         "bfcl_non_live_light",
-        "mllm_router",
+        "mllm_router_v2",
         "qwen3vl_general_light",
         "visual_rft_coco_light",
     ]
@@ -118,7 +119,7 @@ def _five_round_suite_stats(path: Path) -> dict[str, Any]:
         "xlam_function_calling_full",
         "toolvqa_step_full",
         "bfcl_non_live_full",
-        "mllm_router_full",
+        "mllm_router_v2_full",
         "qwen3vl_general_full",
         "visual_rft_coco_full",
     ]
@@ -242,13 +243,14 @@ def audit_c0(
     minimums = {**DEFAULT_MINIMUM_ROWS, **dict(minimum_rows or {})}
     data_files = {
         "xlam_train": root / "data/exports/msswift_sft/xlam_train.jsonl",
-        "mllm_router_train": root / "data/exports/msswift_sft/mllm_tool_router_train.jsonl",
+        "mllm_router_train": root / "data/exports/msswift_sft/mllm_tool_router_v2_train.jsonl",
         "toolvqa_train": root / "data/exports/msswift_sft/toolvqa_train.jsonl",
+        "c3_direct_answer_train": root / "data/exports/msswift_sft/toolvqa_direct_answer_retention_train.jsonl",
         "visual_rft_train": root / "data/exports/msswift_grpo/visual_rft_coco_base65_train.jsonl",
         "xlam_full": root / "data/eval/xlam/full.jsonl",
         "xlam_light": root / "data/eval/xlam/light.jsonl",
-        "mllm_router_full": root / "data/eval/mllm_router/full.jsonl",
-        "mllm_router_light": root / "data/eval/mllm_router/light.jsonl",
+        "mllm_router_full": root / "data/eval/mllm_router_v2/full.jsonl",
+        "mllm_router_light": root / "data/eval/mllm_router_v2/light.jsonl",
         "visual_rft_coco_full": root / "data/eval/visual_rft_coco/full.jsonl",
         "visual_rft_coco_light": root / "data/eval/visual_rft_coco/light.jsonl",
         "toolvqa_test": root / "data/exports/msswift_sft/toolvqa_test.jsonl",
@@ -267,7 +269,7 @@ def audit_c0(
 
     split_files = {
         "xlam_split": root / "data/splits/xlam/seed42.json",
-        "mllm_router_split": root / "data/splits/mllm_router/seed42.json",
+        "mllm_router_split": root / "data/splits/mllm_router_v2/seed42.json",
     }
     for check_id, path in split_files.items():
         _check(checks, check_id, _nonempty(path), path)
@@ -416,6 +418,7 @@ def audit_c0(
     training_ids = [
         "xlam_train",
         "mllm_router_train",
+        "c3_direct_answer_train",
         "toolvqa_train",
         "visual_rft_train",
         "xlam_light",

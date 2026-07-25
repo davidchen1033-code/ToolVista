@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / "configs/evaluation/suites.yaml",
     )
     parser.add_argument("--api-base", default="http://127.0.0.1:8000/v1")
+    parser.add_argument(
+        "--candidate-log",
+        type=Path,
+        help="Candidate API log used to recover progress for evaluators started before live counters.",
+    )
     parser.add_argument("--warning-seconds", type=int, default=300)
     return parser.parse_args()
 
@@ -69,6 +75,15 @@ def planned_samples(spec: Any) -> int | None:
         if not path.is_absolute():
             path = REPO_ROOT / path
         return count_jsonl(path)
+    if spec.execution == "bfcl" and spec.dataset_path:
+        path = Path(spec.dataset_path)
+        if not path.is_absolute():
+            path = REPO_ROOT / path
+        manifest = load_json(path)
+        if manifest is not None:
+            values = manifest.values()
+            if all(isinstance(items, list) for items in values):
+                return sum(len(items) for items in values)
     return None
 
 
@@ -97,6 +112,70 @@ def toolvqa_progress(benchmark_dir: Path, planned: int | None) -> tuple[int, int
         return None
     payload = load_json(temporary_files[-1])
     return (len(payload), planned) if payload is not None else None
+
+
+def recorded_progress(benchmark_dir: Path, planned: int | None) -> tuple[int, int] | None:
+    payload = load_json(benchmark_dir / "progress.json")
+    if payload is None:
+        return None
+    completed = payload.get("completed")
+    total = payload.get("total", planned)
+    if not isinstance(completed, int) or not isinstance(total, int) or total <= 0:
+        return None
+    return min(max(completed, 0), total), total
+
+
+def bfcl_progress(benchmark_dir: Path, planned: int | None) -> tuple[int, int] | None:
+    if planned is None:
+        return None
+    result_root = benchmark_dir / "bfcl_workspace" / "result"
+    generated = 0
+    try:
+        for path in result_root.rglob("BFCL_v4_*_result.json"):
+            with path.open("rb") as stream:
+                generated += sum(1 for line in stream if line.strip())
+    except OSError:
+        return None
+    return min(generated, planned), planned
+
+
+def native_log_progress(
+    spec: Any,
+    candidate_log: Path | None,
+    planned: int | None,
+) -> tuple[int, int] | None:
+    if candidate_log is None or planned is None or not spec.dataset_path:
+        return None
+    dataset_path = Path(spec.dataset_path)
+    if not dataset_path.is_absolute():
+        dataset_path = REPO_ROOT / dataset_path
+    try:
+        with dataset_path.open("r", encoding="utf-8") as stream:
+            first_row = json.loads(next(line for line in stream if line.strip()))
+        messages = first_row.get("messages", [])
+        first_user = next(
+            message for message in messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        )
+        marker = first_user.get("content")
+        if not isinstance(marker, str):
+            return None
+        marker = re.sub(r"<(?:image|video|audio)>", "", marker)
+        if not marker:
+            return None
+        started = False
+        completed = 0
+        with candidate_log.open("r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                if not started and marker in line:
+                    started = True
+                if started and 'POST /v1/chat/completions HTTP/1.1" 200 OK' in line:
+                    completed += 1
+    except (OSError, StopIteration, json.JSONDecodeError):
+        return None
+    if not started:
+        return None
+    return min(completed, planned), planned
 
 
 def general_dataset_progress(benchmark_dir: Path, datasets: list[str]) -> tuple[int, int]:
@@ -227,13 +306,31 @@ def main() -> int:
                 progress = toolvqa_progress(benchmark_dir, planned)
                 done, total = progress if progress is not None else (None, planned)
                 detail = format_progress(done, total)
+            elif spec.execution == "bfcl":
+                progress = bfcl_progress(benchmark_dir, planned)
+                done, total = progress if progress is not None else (0, planned)
+                detail = format_progress(done, total)
             elif spec.execution == "swift_eval":
                 dataset_done, dataset_total = general_dataset_progress(
                     benchmark_dir, list(spec.swift_datasets)
                 )
-                detail = f"prediction files {format_progress(dataset_done, dataset_total)}; sample % N/A"
+                done = dataset_done * spec.eval_limit if spec.eval_limit is not None else None
+                detail = (
+                    f"completed datasets {format_progress(dataset_done, dataset_total)}; "
+                    f"observable samples {format_progress(done, planned)}"
+                )
             else:
-                detail = "sample % N/A (predictions are written atomically at completion)"
+                progress = recorded_progress(benchmark_dir, planned)
+                progress_source = "live counter"
+                if progress is None and spec.execution.startswith("native_"):
+                    progress = native_log_progress(spec, args.candidate_log, planned)
+                    progress_source = "candidate API log"
+                done, total = progress if progress is not None else (None, planned)
+                detail = (
+                    f"{format_progress(done, total)}; source: {progress_source}"
+                    if progress is not None
+                    else "sample % N/A (this evaluator was started before live counters were enabled)"
+                )
             rows.append((benchmark_id, "RUNNING" if processes else "INCOMPLETE", detail))
         else:
             rows.append((benchmark_id, "pending", format_progress(0, planned)))

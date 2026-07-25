@@ -341,7 +341,7 @@ class MLLMRouterScorerTest(unittest.TestCase):
             },
         )
 
-    def test_catalog_is_shared_and_contains_every_target(self) -> None:
+    def test_catalog_is_per_row_and_contains_every_target(self) -> None:
         malformed_catalogs = ["route_a", [], ["route_a", 1], ["   "]]
         for router_catalog in malformed_catalogs:
             with self.subTest(router_catalog=router_catalog):
@@ -361,25 +361,25 @@ class MLLMRouterScorerTest(unittest.TestCase):
                         ]
                     )
 
-        with self.assertRaisesRegex(ValueError, "catalog-b.*same router_catalog"):
-            score_mllm_router(
-                [
-                    {
-                        "sample_id": "catalog-a",
-                        "input_modality": "text",
-                        "router_catalog": ["route_a", "route_b"],
-                        "target_tools": ["route_a"],
-                        "prediction": "route_a",
-                    },
-                    {
-                        "sample_id": "catalog-b",
-                        "input_modality": "text",
-                        "router_catalog": ["route_a", "route_c"],
-                        "target_tools": ["route_a"],
-                        "prediction": "route_a",
-                    },
-                ]
-            )
+        per_row = score_mllm_router(
+            [
+                {
+                    "sample_id": "catalog-a",
+                    "input_modality": "text",
+                    "router_catalog": ["route_a", "route_b"],
+                    "target_tools": ["route_a"],
+                    "prediction": "route_b",
+                },
+                {
+                    "sample_id": "catalog-b",
+                    "input_modality": "text",
+                    "router_catalog": ["route_a", "route_c"],
+                    "target_tools": ["route_a"],
+                    "prediction": "route_c",
+                },
+            ]
+        )
+        self.assertEqual(per_row["upstream_metrics"]["invalid_route_rate"], 0.0)
 
         normalized = score_mllm_router(
             [
@@ -401,7 +401,7 @@ class MLLMRouterScorerTest(unittest.TestCase):
         )
         self.assertEqual(normalized["upstream_metrics"]["invalid_route_rate"], 0.0)
 
-        with self.assertRaisesRegex(ValueError, "missing-catalog.*same router_catalog"):
+        with self.assertRaisesRegex(ValueError, "missing-catalog.*must use router_catalog"):
             score_mllm_router(
                 [
                     {

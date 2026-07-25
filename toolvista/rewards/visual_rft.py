@@ -126,7 +126,7 @@ def _parse_boxes(text: Any) -> Optional[List[dict[str, Any]]]:
     except ValueError:
         try:
             value = ast.literal_eval(payload)
-        except (SyntaxError, ValueError):
+        except (SyntaxError, TypeError, ValueError):
             value = _recover_truncated_boxes(payload)
 
     if not isinstance(value, list) or not value:
@@ -156,7 +156,7 @@ def _recover_truncated_boxes(payload: str) -> Any:
     except ValueError:
         try:
             return ast.literal_eval(recovered)
-        except (SyntaxError, ValueError):
+        except (SyntaxError, TypeError, ValueError):
             return None
 
 

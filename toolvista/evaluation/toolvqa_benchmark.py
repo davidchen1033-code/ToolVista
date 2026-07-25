@@ -30,7 +30,13 @@ def run_toolvqa_benchmark(
     benchmark_dir.mkdir(parents=True, exist_ok=True)
     result_path = benchmark_dir / "result.json"
     if resume and result_path.is_file():
-        return EvaluationResult.from_dict(json.loads(result_path.read_text(encoding="utf-8")))
+        resumed = EvaluationResult.from_dict(
+            json.loads(result_path.read_text(encoding="utf-8"))
+        )
+        if resumed.status == "passed":
+            return resumed
+    if result_path.is_file():
+        result_path.unlink()
     if score_only:
         raise ValueError("ToolVQA OpenCompass step benchmark does not support --score-only.")
     if not spec.dataset_path:

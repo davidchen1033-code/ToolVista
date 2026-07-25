@@ -21,7 +21,7 @@ xLAM 不按导出的 JSONL 行拆分，因为一个 trajectory 可以导出多�
 cd /root/autodl-tmp/ToolVista
 source /root/autodl-tmp/venvs/toolvista/bin/activate
 
-SEED=42 bash scripts/autodl/04_prepare_c0_and_training_data.sh
+SEED=42 bash scripts/autodl/prepare_data.sh --stage c0 --variant raw
 ```
 
 该脚本先生成正式数据，再运行 readiness；任一正式训练文件规模不足、JSONL 损坏、媒体路径缺失、模型分片不完整都会返回非零退出码。需要单独调试拆分参数时，再直接调用 `scripts/prepare_training_and_eval_data.py`。
@@ -36,13 +36,14 @@ RealWorldQA、MathVision_MINI、MMMU_DEV_VAL、OCRBench。预取使用
 
 ```text
 data/exports/msswift_sft/xlam_train.jsonl
-data/exports/msswift_sft/mllm_tool_router_train.jsonl
+data/exports/msswift_sft/mllm_tool_router_v2_train.jsonl
+data/exports/msswift_sft/toolvqa_direct_answer_retention_train.jsonl
 data/eval/xlam/full.jsonl
 data/eval/xlam/light.jsonl
-data/eval/mllm_router/full.jsonl
-data/eval/mllm_router/light.jsonl
+data/eval/mllm_router_v2/full.jsonl
+data/eval/mllm_router_v2/light.jsonl
 data/splits/xlam/seed42.json
-data/splits/mllm_router/seed42.json
+data/splits/mllm_router_v2/seed42.json
 data/reports/c0/training_and_eval_data.report.json
 ```
 
@@ -139,7 +140,7 @@ RUN_ID=c0_base_full_seed42 \
 STAGE=c0-base-full \
 API_MODEL=Qwen3-VL-4B-Instruct \
 WANDB_GROUP=c0-base-full \
-bash scripts/autodl/13_run_full_eval.sh
+SUITE=c0_full bash scripts/autodl/lib/evaluate_raw.sh
 ```
 
 `c0_full` 包含：
@@ -212,16 +213,20 @@ cd /root/autodl-tmp/ToolVista
 
 SEED=42 \
 WANDB_PROJECT=toolvista-qwen3vl \
-bash scripts/autodl/05_train_xlam_sft.sh
+bash scripts/autodl/train_sft.sh --stage c1 --variant raw
 ```
 
 C2 仍使用官方 ToolVQA train + 新 xLAM replay。C3 的默认 MLLM 输入已改为：
 
 ```text
-data/exports/msswift_sft/mllm_tool_router_train.jsonl
+data/exports/msswift_sft/mllm_tool_router_v2_train.jsonl
+data/exports/msswift_sft/toolvqa_direct_answer_retention_train.jsonl
 ```
 
-即 text + image + video 的无泄漏 Router 训练集，不再只训练 `mllm_tool_text_train.jsonl`。
+Router v2 在 train/eval 中使用相同的 `[TOOL_ROUTER_MODE]` 显式指令与最多 32 个
+同模态候选工具，且按问题/模态/媒体合并冲突标签。direct-answer retention 来自
+ToolVQA train，移除了全部工具轨迹，只保留普通视觉问答。这两项共同避免模型把所有
+MMMU、RealWorldQA 和 OCR 问题都回答成模型 ID。
 
 四个 RL A/B 分支默认共同读取正式 6,000 条 COCO-base65 数据：
 

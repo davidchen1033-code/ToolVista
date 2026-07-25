@@ -16,7 +16,7 @@ Put this ToolVista repository at `/root/autodl-tmp/ToolVista`, then run:
 
 ```bash
 cd /root/autodl-tmp/ToolVista
-bash scripts/autodl/00_setup_env.sh
+bash scripts/autodl/setup_env.sh
 ```
 
 The script reuses the PyTorch/CUDA environment in the AutoDL image. It clones
@@ -29,8 +29,8 @@ Official Hugging Face:
 
 ```bash
 cd /root/autodl-tmp/ToolVista
-bash scripts/autodl/01_download_toolvqa.sh
-bash scripts/autodl/01_download_qwen3_vl.sh
+bash scripts/autodl/download_toolvqa.sh
+bash scripts/autodl/download_qwen3_vl.sh
 ```
 
 When direct Hugging Face access is unavailable, set a mirror for the same
@@ -38,8 +38,8 @@ commands:
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
-bash scripts/autodl/01_download_toolvqa.sh
-bash scripts/autodl/01_download_qwen3_vl.sh
+bash scripts/autodl/download_toolvqa.sh
+bash scripts/autodl/download_qwen3_vl.sh
 ```
 
 Expected paths:
@@ -58,7 +58,7 @@ If the model is already present elsewhere, skip model download and set
 
 ```bash
 cd /root/autodl-tmp/ToolVista
-MAX_ITEMS=50 bash scripts/autodl/02_export_toolvqa_ms_swift.sh
+MAX_ITEMS=50 bash scripts/autodl/prepare_data.sh --stage toolvqa --variant raw
 ```
 
 Inspect the report before training:
@@ -78,7 +78,9 @@ the errors JSONL instead of being silently converted into incorrect text data.
 
 ```bash
 cd /root/autodl-tmp/ToolVista
-bash scripts/autodl/04_train_toolvqa_smoke.sh
+MAX_ITEMS=50 bash scripts/autodl/prepare_data.sh --stage toolvqa --variant raw
+OUTPUT_DIR=/root/autodl-tmp/ToolVista/output/toolvqa_smoke \
+bash scripts/autodl/train_sft.sh --stage toolvqa --variant raw
 ```
 
 This command converts 50 rows and starts Qwen3-VL-4B-Instruct LoRA SFT with
@@ -89,7 +91,8 @@ For a model in another directory:
 
 ```bash
 MODEL=/root/autodl-tmp/your-model \
-bash scripts/autodl/04_train_toolvqa_smoke.sh
+OUTPUT_DIR=/root/autodl-tmp/ToolVista/output/toolvqa_smoke \
+bash scripts/autodl/train_sft.sh --stage toolvqa --variant raw
 ```
 
 ## 5. Convert the complete training split
@@ -98,7 +101,7 @@ bash scripts/autodl/04_train_toolvqa_smoke.sh
 
 ```bash
 cd /root/autodl-tmp/ToolVista
-MAX_ITEMS=0 bash scripts/autodl/02_export_toolvqa_ms_swift.sh
+MAX_ITEMS=0 bash scripts/autodl/prepare_data.sh --stage toolvqa --variant raw
 ```
 
 Check the report again. The number of exported rows may be lower than 21,105
@@ -113,7 +116,7 @@ EPOCHS=1 \
 GRAD_ACC=16 \
 IMAGE_MAX_TOKEN_NUM=768 \
 MAX_LENGTH=4096 \
-bash scripts/autodl/03_train_toolvqa_sft.sh
+bash scripts/autodl/train_sft.sh --stage toolvqa --variant raw
 ```
 
 The default output directory is:
@@ -138,7 +141,7 @@ MODEL=/root/autodl-tmp/model/Qwen3-VL-2B-Instruct \
 IMAGE_MAX_TOKEN_NUM=384 \
 MAX_LENGTH=2048 \
 GRAD_ACC=16 \
-bash scripts/autodl/03_train_toolvqa_sft.sh
+bash scripts/autodl/train_sft.sh --stage toolvqa --variant raw
 ```
 
 For two GPUs:
@@ -147,7 +150,7 @@ For two GPUs:
 CUDA_VISIBLE_DEVICES=0,1 \
 NPROC_PER_NODE=2 \
 GRAD_ACC=8 \
-bash scripts/autodl/03_train_toolvqa_sft.sh
+bash scripts/autodl/train_sft.sh --stage toolvqa --variant raw
 ```
 
 If a 4B single-GPU run still runs out of memory, first reduce

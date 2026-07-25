@@ -21,6 +21,12 @@ from scripts.prepare_eval_data import _last_user_text, _xlam_row, normalize_text
 from toolvista.adapters.mllm_tool import MLLMToolAdapter
 from toolvista.adapters.xlam import XLAMAdapter
 from toolvista.exporters.ms_swift import MsSwiftExportError, canonical_to_ms_swift_row
+from toolvista.router_data import (
+    DEFAULT_ROUTER_CATALOG_SIZE,
+    ROUTER_CONTRACT_VERSION,
+    build_router_catalog,
+    with_router_system_prompt,
+)
 from toolvista.schema.canonical import CanonicalSample
 from toolvista.utils.paths import ToolVistaPaths
 
@@ -92,10 +98,12 @@ def _promote(temporary: Mapping[Path, Path]) -> None:
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
@@ -221,26 +229,36 @@ def _mllm_eval_row(
     sample: CanonicalSample,
     *,
     catalog: Sequence[str],
+    target_tools: Sequence[str] | None = None,
 ) -> dict[str, Any] | None:
     if not _is_mllm_router_sample(sample):
         return None
-    target_tools = sample.labels.get("target_tools")
-    if not isinstance(target_tools, list) or not target_tools:
+    selected_targets = (
+        list(target_tools)
+        if target_tools is not None
+        else sample.labels.get("target_tools")
+    )
+    if not isinstance(selected_targets, list) or not selected_targets:
         return None
     normalized_text = _mllm_prompt(sample)
     if not normalized_text:
         return None
     exported = canonical_to_ms_swift_row(sample)
-    prompt_messages = exported.get("messages", [])[:-1]
+    prompt_messages = with_router_system_prompt(
+        exported.get("messages", [])[:-1],
+        catalog,
+    )
     row: dict[str, Any] = {
         "sample_id": sample.sample_id,
         "source_project": "MLLM-Tool",
         "split": "full_holdout",
         "input_modality": str(sample.labels.get("input_modality", "text")),
-        # Match the upstream MLLM-Tool inference and the C3 SFT prompt format.
+        "router_contract": ROUTER_CONTRACT_VERSION,
         "messages": prompt_messages,
         "router_catalog": list(catalog),
-        "target_tools": sorted(set(str(item).strip() for item in target_tools if str(item).strip())),
+        "target_tools": sorted(
+            set(str(item).strip() for item in selected_targets if str(item).strip())
+        ),
         "normalized_text": normalized_text,
     }
     for key in ("images", "videos", "audios"):
@@ -272,6 +290,7 @@ def prepare_mllm_router(
     file_keys: Sequence[str],
     validate_media_files: bool,
     overwrite: bool,
+    catalog_size: int = DEFAULT_ROUTER_CATALOG_SIZE,
 ) -> dict[str, Any]:
     outputs = [train_output, full_output, light_output, split_output]
     _require_outputs(outputs, overwrite=overwrite)
@@ -282,6 +301,7 @@ def prepare_mllm_router(
     modality_counts = Counter()
     stats = Counter()
     catalog_values: set[str] = set()
+    modality_catalog_values: dict[str, set[str]] = {}
     train_samples: list[CanonicalSample] = []
     eval_samples: list[CanonicalSample] = []
 
@@ -302,10 +322,15 @@ def prepare_mllm_router(
                     stats["skipped"] += 1
                     continue
                 target_tools = sample.labels.get("target_tools", [])
-                catalog_values.update(
+                normalized_targets = {
                     value.strip()
                     for value in target_tools
                     if isinstance(value, str) and value.strip()
+                }
+                catalog_values.update(normalized_targets)
+                modality = str(sample.labels.get("input_modality", "text"))
+                modality_catalog_values.setdefault(modality, set()).update(
+                    normalized_targets
                 )
                 normalized_text = _mllm_prompt(sample)
                 if not normalized_text:
@@ -329,34 +354,146 @@ def prepare_mllm_router(
                 raise ValueError("MLLM-Tool produced an empty router catalog.")
             catalog = sorted(catalog_values)
 
+            grouped_train: dict[tuple[Any, ...], dict[str, Any]] = {}
             for sample in train_samples:
                 try:
+                    exported = canonical_to_ms_swift_row(sample)
+                    base_row: dict[str, Any] = {
+                        "normalized_text": _mllm_prompt(sample),
+                        "input_modality": str(
+                            sample.labels.get("input_modality", "text")
+                        ),
+                    }
+                    for key in ("images", "videos", "audios"):
+                        values = exported.get(key)
+                        if isinstance(values, list) and values:
+                            base_row[key] = list(values)
+                    identity = _mllm_eval_identity(base_row)
+                except (MsSwiftExportError, TypeError, ValueError):
+                    stats["skipped"] += 1
+                    continue
+                targets = {
+                    str(item).strip()
+                    for item in sample.labels.get("target_tools", [])
+                    if isinstance(item, str) and item.strip()
+                }
+                if identity not in grouped_train:
+                    grouped_train[identity] = {
+                        "sample": sample,
+                        "targets": targets,
+                    }
+                else:
+                    current = grouped_train[identity]
+                    current["targets"].update(targets)
+                    if sample.sample_id < current["sample"].sample_id:
+                        current["sample"] = sample
+
+            for identity, grouped in sorted(
+                grouped_train.items(), key=lambda item: json.dumps(item[0])
+            ):
+                sample = grouped["sample"]
+                all_targets = sorted(grouped["targets"])
+                if not all_targets:
+                    stats["skipped"] += 1
+                    continue
+                chosen_target = min(
+                    all_targets,
+                    key=lambda target: hashlib.sha256(
+                        f"{seed}:{identity}:{target}".encode("utf-8")
+                    ).hexdigest(),
+                )
+                try:
                     row = canonical_to_ms_swift_row(sample, include_metadata=True)
+                    modality = str(sample.labels.get("input_modality", "text"))
+                    candidate_pool = [
+                        chosen_target,
+                        *sorted(modality_catalog_values[modality] - set(all_targets)),
+                    ]
+                    sample_catalog = build_router_catalog(
+                        [chosen_target],
+                        candidate_pool,
+                        identity=json.dumps(identity, ensure_ascii=False),
+                        seed=seed,
+                        max_size=catalog_size,
+                    )
+                    row["messages"][-1]["content"] = chosen_target
+                    row["messages"] = with_router_system_prompt(
+                        row["messages"],
+                        sample_catalog,
+                    )
+                    row["router_catalog"] = sample_catalog
+                    row["router_contract"] = ROUTER_CONTRACT_VERSION
+                    row["metadata"]["router_contract"] = ROUTER_CONTRACT_VERSION
+                    row["metadata"]["router_catalog_size"] = len(sample_catalog)
+                    row["metadata"]["labels"]["target_tools"] = all_targets
+                    row["metadata"]["labels"]["selected_sft_target"] = chosen_target
+                    row["metadata"]["labels"].pop("target_tool_calls", None)
                 except (MsSwiftExportError, TypeError, ValueError):
                     stats["skipped"] += 1
                     continue
                 train_handle.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
                 stats["train_rows"] += 1
-                modality_counts[str(sample.labels.get("input_modality", "text"))] += 1
+                modality_counts[modality] += 1
+            stats["collapsed_duplicate_train_rows"] = len(train_samples) - len(
+                grouped_train
+            )
 
+        grouped_samples: dict[tuple[Any, ...], dict[str, Any]] = {}
         for sample in eval_samples:
             try:
-                eval_row = _mllm_eval_row(sample, catalog=catalog)
+                exported = canonical_to_ms_swift_row(sample)
+                base_row: dict[str, Any] = {
+                    "normalized_text": _mllm_prompt(sample),
+                    "input_modality": str(
+                        sample.labels.get("input_modality", "text")
+                    ),
+                }
+                for key in ("images", "videos", "audios"):
+                    values = exported.get(key)
+                    if isinstance(values, list) and values:
+                        base_row[key] = list(values)
+                identity = _mllm_eval_identity(base_row)
             except (MsSwiftExportError, TypeError, ValueError):
                 stats["skipped"] += 1
                 continue
-            if eval_row is None:
+            targets = {
+                str(item).strip()
+                for item in sample.labels.get("target_tools", [])
+                if isinstance(item, str) and item.strip()
+            }
+            if identity not in grouped_samples:
+                grouped_samples[identity] = {
+                    "sample": sample,
+                    "targets": targets,
+                }
+            else:
+                current = grouped_samples[identity]
+                current["targets"].update(targets)
+                if sample.sample_id < current["sample"].sample_id:
+                    current["sample"] = sample
+
+        for identity, grouped in grouped_samples.items():
+            sample = grouped["sample"]
+            targets = sorted(grouped["targets"])
+            modality = str(sample.labels.get("input_modality", "text"))
+            try:
+                sample_catalog = build_router_catalog(
+                    targets,
+                    modality_catalog_values[modality],
+                    identity=json.dumps(identity, ensure_ascii=False),
+                    seed=seed,
+                    max_size=catalog_size,
+                )
+                eval_row = _mllm_eval_row(
+                    sample,
+                    catalog=sample_catalog,
+                    target_tools=targets,
+                )
+            except (MsSwiftExportError, TypeError, ValueError):
                 stats["skipped"] += 1
                 continue
-            identity = _mllm_eval_identity(eval_row)
-            if identity not in grouped_eval:
+            if eval_row is not None:
                 grouped_eval[identity] = eval_row
-            else:
-                current = grouped_eval[identity]
-                current["sample_id"] = min(str(current["sample_id"]), str(eval_row["sample_id"]))
-                current["target_tools"] = sorted(
-                    set(current["target_tools"]) | set(eval_row["target_tools"])
-                )
 
         full_rows = sorted(grouped_eval.values(), key=lambda row: str(row["sample_id"]))
         light_rows = select_light(full_rows, limit=light_limit, seed=seed, namespace="mllm_router_light")
@@ -374,9 +511,18 @@ def prepare_mllm_router(
             "algorithm": "sha256-first-64-bits",
             "eval_fraction": eval_fraction,
             "catalog_size": len(catalog),
+            "candidate_catalog_size": catalog_size,
+            "router_contract": ROUTER_CONTRACT_VERSION,
+            "catalog_size_by_modality": {
+                modality: len(values)
+                for modality, values in sorted(modality_catalog_values.items())
+            },
             "train_normalized_prompt_count": len(train_prompts),
             "eval_normalized_prompt_count": len(eval_prompts),
             "train_rows": stats["train_rows"],
+            "collapsed_duplicate_train_rows": stats[
+                "collapsed_duplicate_train_rows"
+            ],
             "train_rows_by_modality": dict(sorted(modality_counts.items())),
             "full_rows": len(full_rows),
             "light_rows": len(light_rows),
@@ -402,6 +548,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mllm-eval-fraction", type=float, default=0.20)
     parser.add_argument("--light-limit", type=int, default=200)
     parser.add_argument("--mllm-file-keys", nargs="+", default=["text", "image", "video"])
+    parser.add_argument(
+        "--mllm-catalog-size",
+        type=int,
+        default=DEFAULT_ROUTER_CATALOG_SIZE,
+    )
     parser.add_argument("--skip-media-validation", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--xlam-train", type=Path, default=Path("data/exports/msswift_sft/xlam_train.jsonl"))
@@ -411,10 +562,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mllm-train",
         type=Path,
-        default=Path("data/exports/msswift_sft/mllm_tool_router_train.jsonl"),
+        default=Path("data/exports/msswift_sft/mllm_tool_router_v2_train.jsonl"),
     )
-    parser.add_argument("--mllm-full", type=Path, default=Path("data/eval/mllm_router/full.jsonl"))
-    parser.add_argument("--mllm-light", type=Path, default=Path("data/eval/mllm_router/light.jsonl"))
+    parser.add_argument("--mllm-full", type=Path, default=Path("data/eval/mllm_router_v2/full.jsonl"))
+    parser.add_argument("--mllm-light", type=Path, default=Path("data/eval/mllm_router_v2/light.jsonl"))
     parser.add_argument("--mllm-split", type=Path)
     parser.add_argument(
         "--report",
@@ -452,6 +603,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         file_keys=tuple(args.mllm_file_keys),
         validate_media_files=not args.skip_media_validation,
         overwrite=args.overwrite,
+        catalog_size=args.mllm_catalog_size,
     )
     report = {"seed": args.seed, "xlam": xlam, "mllm_router": mllm}
     args.report.parent.mkdir(parents=True, exist_ok=True)
