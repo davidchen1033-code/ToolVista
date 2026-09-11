@@ -1,12 +1,13 @@
 # AutoDL experiment entrypoints
 
-This directory has four experiment entrypoints. New scripts are named by action,
+This directory has five experiment entrypoints. New scripts are named by action,
 not by execution order:
 
 ```text
 prepare_data.sh   Build or verify datasets.
 train_sft.sh      Run C1-C3 SFT, optionally in tmux.
 train_rl.sh       Run C4 GRPO-family training in tmux.
+train_agent_rl.sh Run isolated verl + BrowserGym GRPO/GiGPO (--algorithm).
 benchmark.sh      Merge, serve, and evaluate C3/C4 checkpoints in tmux.
 ```
 
@@ -216,3 +217,10 @@ DRY_RUN=1 bash scripts/autodl/benchmark.sh \
 
 Dry-run validates the selected artifacts and prints the resolved contract without
 starting tmux, changing a run directory, or allocating the GPU.
+
+## Environment-feedback AgentRL (verl)
+
+See [verl + BrowserGym MiniWoB usage](../../docs/agentrl_verl_usage.md) for the isolated
+`train_agent_rl.sh` launcher, checkpoint export, GUI cold-start gate, and optional GUI SFT.
+Use `--algorithm gigpo` or the thin `train_agent_gigpo.sh` wrapper for GiGPO on the same data.
+Install the shared pinned AgentRL environment with `bash scripts/autodl/setup_verl_agent.sh`.

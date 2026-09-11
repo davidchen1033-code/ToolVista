@@ -1,0 +1,8 @@
+defaults:
+  - ppo_trainer
+  - miniwob_common
+  - _self_
+
+hydra:
+  searchpath:
+    - pkg://verl.trainer.config

@@ -1,0 +1,6 @@
+- name: toolvista_miniwob
+  _target_: toolvista.agentrl.verl_agent_loop.create_agent_loop
+  max_steps: 15
+  max_action_tokens: 256
+  reward_mode: terminal
+  artifact_dir: ${oc.env:AGENTRL_ROLLOUT_DIR,runs/agentrl/rollouts}
