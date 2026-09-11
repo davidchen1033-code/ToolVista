@@ -1,0 +1,17 @@
+defaults:
+  - ppo_trainer
+  - miniwob_common
+  - _self_
+
+hydra:
+  searchpath:
+    - pkg://verl.trainer.config
+
+algorithm:
+  adv_estimator: gigpo
+
+gigpo:
+  step_weight: 1.0
+
+trainer:
+  experiment_name: miniwob-gigpo

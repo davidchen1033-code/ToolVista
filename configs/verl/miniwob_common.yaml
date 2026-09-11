@@ -1,0 +1,101 @@
+# Shared rollout, reward, model and optimizer settings for both ablations.
+data:
+  train_files: ${oc.env:AGENTRL_TRAIN_DATA}
+  val_files: ${oc.env:AGENTRL_VAL_DATA}
+  train_batch_size: 4
+  val_batch_size: 4
+  max_prompt_length: 2048
+  max_response_length: 14336
+  return_raw_chat: true
+  filter_overlong_prompts: false
+  image_patch_size: 16
+  truncation: error
+  trust_remote_code: false
+
+actor_rollout_ref:
+  model:
+    path: ${oc.env:AGENTRL_MODEL}
+    trust_remote_code: false
+    use_remove_padding: false
+    enable_gradient_checkpointing: true
+    lora_rank: 16
+    lora_alpha: 32
+    lora_adapter_path: null
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+    exclude_modules: '.*visual.*'
+    override_config:
+      attn_implementation: sdpa
+  actor:
+    strategy: fsdp
+    freeze_vision_tower: true
+    ppo_mini_batch_size: 4
+    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: false
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    entropy_coeff: 0.0
+    optim:
+      lr: 1.0e-6
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+  rollout:
+    name: vllm
+    mode: async
+    n: 4
+    temperature: 1.0
+    top_p: 1.0
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.45
+    max_model_len: 16384
+    max_num_batched_tokens: 16384
+    max_num_seqs: 4
+    enforce_eager: true
+    log_prob_micro_batch_size_per_gpu: 1
+    calculate_log_probs: true
+    multi_turn:
+      enable: true
+      max_assistant_turns: 15
+    agent:
+      num_workers: 1
+      default_agent_loop: toolvista_miniwob
+      agent_loop_config_path: ${oc.env:AGENTRL_AGENT_CONFIG}
+    engine_kwargs:
+      vllm:
+        limit_mm_per_prompt:
+          image: 15
+    val_kwargs:
+      n: 1
+      do_sample: false
+      temperature: 0.0
+
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+
+critic:
+  enable: false
+
+reward_model:
+  enable: false
+  use_reward_loop: false
+
+trainer:
+  project_name: toolvista-agentrl
+  experiment_name: miniwob-grpo
+  logger: [console]
+  nnodes: 1
+  n_gpus_per_node: 1
+  total_epochs: 1
+  total_training_steps: 100
+  save_freq: 10
+  test_freq: 10
+  val_before_train: true
+  resume_mode: disable
+  default_local_dir: ${oc.env:AGENTRL_OUTPUT_DIR}

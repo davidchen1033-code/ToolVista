@@ -1,0 +1,17 @@
+# Linux / Python 3.11; install into a separate venv from ms-swift.
+verl[vllm]==0.7.0
+vllm==0.11.2
+torch==2.9.0
+transformers==4.57.3
+qwen-vl-utils==0.0.14
+peft==0.17.1
+tensordict==0.10.0
+ray[default,cgraph]==2.49.2
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+browsergym-core==0.13.3
+browsergym-miniwob==0.13.3
+gymnasium==1.0.0
+playwright==1.51.0
+hydra-core==1.3.2
+pyarrow==19.0.1

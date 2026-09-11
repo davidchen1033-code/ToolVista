@@ -40,6 +40,20 @@ cd "${TOOLVISTA_ROOT}"
 
 "${SWIFT_BIN}" sft --help >/dev/null
 
+if [[ "${INSTALL_AGENTRL:-false}" == "true" ]]; then
+  # Keep the pinned verl/vLLM/PyTorch stack out of the existing ms-swift environment.
+  AGENTRL_VENV="${AGENTRL_VENV:-/root/autodl-tmp/venvs/toolvista-agentrl}"
+  AGENTRL_BOOTSTRAP_PYTHON="${AGENTRL_BOOTSTRAP_PYTHON:-python3.11}"
+  if [[ ! -x "${AGENTRL_VENV}/bin/python" ]]; then
+    "${AGENTRL_BOOTSTRAP_PYTHON}" -m venv "${AGENTRL_VENV}"
+  fi
+  "${AGENTRL_VENV}/bin/python" -m pip install --upgrade pip
+  "${AGENTRL_VENV}/bin/python" -m pip install -r "${TOOLVISTA_ROOT}/configs/verl/requirements-agentrl.txt"
+  "${AGENTRL_VENV}/bin/python" -m pip check
+  "${AGENTRL_VENV}/bin/python" -m playwright install --with-deps chromium
+  "${AGENTRL_VENV}/bin/python" -c "from toolvista.agentrl.dependencies import check_versions, load_verl_api; check_versions(); load_verl_api()"
+fi
+
 echo "Environment ready."
 echo "ToolVista: ${TOOLVISTA_ROOT}"
 echo "ms-swift: ${MS_SWIFT_ROOT}"
